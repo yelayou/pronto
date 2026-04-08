@@ -8,6 +8,8 @@ jobs:
   check:
     name: Lint, typecheck & unit tests
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
     steps:
       - uses: actions/checkout@v4
 
