@@ -1,0 +1,56 @@
+name: Deploy staging
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test-and-deploy:
+    name: Full tests + deploy staging
+    runs-on: ubuntu-latest
+    environment: staging
+    env:
+      TWILIO_ACCOUNT_SID: ${{ secrets.STAGING_TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.STAGING_TWILIO_AUTH_TOKEN }}
+      TWILIO_WHATSAPP_NUMBER: ${{ secrets.STAGING_TWILIO_WHATSAPP_NUMBER }}
+      SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
+      GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DISPATCHER_PHONE: ${{ secrets.DISPATCHER_PHONE }}
+      ETRANSFER_LINK: ${{ secrets.ETRANSFER_LINK }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint + typecheck
+        run: npm run lint && npm run typecheck
+
+      - name: Unit + integration tests
+        run: npm run test -- --reporter=verbose
+
+      - name: Deploy to staging
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: '--prod'
+          alias-domains: staging.pronto.vercel.app
+        id: deploy
+
+      - name: Smoke test staging
+        run: STAGING_URL=${{ steps.deploy.outputs.preview-url }} npm run smoke
+
+      - name: Notify on failure
+        if: failure()
+        run: echo "Staging deploy failed — check Actions tab"

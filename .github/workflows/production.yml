@@ -1,0 +1,62 @@
+name: Deploy production
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirm:
+        description: 'Type DEPLOY to confirm production deployment'
+        required: true
+
+jobs:
+  guard:
+    name: Confirm intent
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check confirmation
+        if: ${{ github.event.inputs.confirm != 'DEPLOY' }}
+        run: |
+          echo "Confirmation not received. Aborting."
+          exit 1
+
+  deploy-production:
+    name: Deploy to production
+    runs-on: ubuntu-latest
+    needs: guard
+    environment: production
+    env:
+      TWILIO_ACCOUNT_SID: ${{ secrets.PROD_TWILIO_ACCOUNT_SID }}
+      TWILIO_AUTH_TOKEN: ${{ secrets.PROD_TWILIO_AUTH_TOKEN }}
+      TWILIO_WHATSAPP_NUMBER: ${{ secrets.PROD_TWILIO_WHATSAPP_NUMBER }}
+      SUPABASE_URL: ${{ secrets.PROD_SUPABASE_URL }}
+      SUPABASE_ANON_KEY: ${{ secrets.PROD_SUPABASE_ANON_KEY }}
+      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.PROD_SUPABASE_SERVICE_ROLE_KEY }}
+      GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      DISPATCHER_PHONE: ${{ secrets.DISPATCHER_PHONE }}
+      ETRANSFER_LINK: ${{ secrets.ETRANSFER_LINK }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Final unit tests before shipping
+        run: npm run test
+
+      - name: Deploy to production
+        uses: amondnet/vercel-action@v25
+        with:
+          vercel-token: ${{ secrets.VERCEL_TOKEN }}
+          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+          vercel-args: '--prod'
+        id: deploy
+
+      - name: Smoke test production
+        run: STAGING_URL=${{ steps.deploy.outputs.preview-url }} npm run smoke
