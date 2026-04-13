@@ -1,5 +1,5 @@
 import { supabase } from './client'
-import type { BookingRecord, BookingStatus } from '@/types'
+import type { BookingRecord, BookingStatus, ServiceType, PaymentMethod, PackageSize } from '@/types'
 
 const TABLE = 'bookings'
 
@@ -87,25 +87,25 @@ export async function logIncident(
 
 function rowToBooking(row: Record<string, unknown>): BookingRecord {
   return {
-    id: row.id,
-    customerPhone: row.customer_phone,
-    serviceType: row.service_type,
-    pickupAddress: row.pickup_address,
-    dropoffAddress: row.dropoff_address,
-    pickupLat: row.pickup_lat ?? undefined,
-    pickupLng: row.pickup_lng ?? undefined,
-    dropoffLat: row.dropoff_lat ?? undefined,
-    dropoffLng: row.dropoff_lng ?? undefined,
-    fare: row.fare,
-    fareBreakdown: row.fare_breakdown,
-    status: row.status,
-    paymentMethod: row.payment_method,
-    passengerCount: row.passenger_count ?? undefined,
-    packageSize: row.package_size ?? undefined,
-    fragile: row.fragile ?? false,
-    recipientName: row.recipient_name ?? undefined,
-    notes: row.notes ?? undefined,
-    createdAt: row.created_at,
-    updatedAt: row.updated_at,
+    id: row.id as string,
+    customerPhone: row.customer_phone as string,
+    serviceType: row.service_type as ServiceType,
+    pickupAddress: row.pickup_address as string,
+    dropoffAddress: row.dropoff_address as string,
+    pickupLat: row.pickup_lat != null ? (row.pickup_lat as number) : undefined,
+    pickupLng: row.pickup_lng != null ? (row.pickup_lng as number) : undefined,
+    dropoffLat: row.dropoff_lat != null ? (row.dropoff_lat as number) : undefined,
+    dropoffLng: row.dropoff_lng != null ? (row.dropoff_lng as number) : undefined,
+    fare: row.fare as number,
+    fareBreakdown: row.fare_breakdown as BookingRecord['fareBreakdown'],
+    status: row.status as BookingStatus,
+    paymentMethod: row.payment_method as PaymentMethod,
+    passengerCount: row.passenger_count != null ? (row.passenger_count as number) : undefined,
+    packageSize: row.package_size != null ? (row.package_size as PackageSize) : undefined,
+    fragile: (row.fragile as boolean) ?? false,
+    recipientName: row.recipient_name != null ? (row.recipient_name as string) : undefined,
+    notes: row.notes != null ? (row.notes as string) : undefined,
+    createdAt: row.created_at as string,
+    updatedAt: row.updated_at as string,
   }
 }
