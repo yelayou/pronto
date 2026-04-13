@@ -85,8 +85,7 @@ export async function logIncident(
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function rowToBooking(row: Record<string, any>): BookingRecord {
+function rowToBooking(row: Record<string, unknown>): BookingRecord {
   return {
     id: row.id,
     customerPhone: row.customer_phone,
