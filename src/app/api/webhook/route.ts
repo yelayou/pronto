@@ -15,20 +15,24 @@ import { handleDispatcherMessage } from '@/lib/dispatcher/handler'
  * PRT-18/19: Customer conversation handler (coming soon)
  */
 export async function POST(request: NextRequest) {
-  // ── Validate Twilio signature ──────────────────────────────────────────────
-  const signature = request.headers.get('x-twilio-signature') ?? ''
-  const url = process.env.NEXT_PUBLIC_APP_URL
-    ? `${process.env.NEXT_PUBLIC_APP_URL}/api/webhook`
-    : request.url
+// ── Validate Twilio signature ──────────────────────────────────────────────
+const signature = request.headers.get('x-twilio-signature') ?? ''
 
-  const formData = await request.formData()
-  const params: Record<string, string> = {}
-  formData.forEach((value, key) => { params[key] = value.toString() })
+const host = request.headers.get('host')
+const protocol = 'https'
+const url = `${protocol}://${host}/api/webhook`
 
-  if (!validateTwilioSignature(signature, url, params)) {
-    console.warn('[webhook] Invalid Twilio signature — request rejected')
-    return new NextResponse('Forbidden', { status: 403 })
-  }
+const formData = await request.formData()
+const params: Record<string, string> = {}
+formData.forEach((value, key) => { params[key] = value.toString() })
+
+if (!validateTwilioSignature(signature, url, params)) {
+  console.warn('[webhook] Invalid Twilio signature — request rejected', {
+    url,
+    signature,
+  })
+  return new NextResponse('Forbidden', { status: 403 })
+}
 
   // ── Parse payload ──────────────────────────────────────────────────────────
   const from = params['From']
