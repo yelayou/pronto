@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { validateTwilioSignature, sendWhatsApp } from '@/lib/twilio/client'
 import { handleDispatcherMessage } from '@/lib/dispatcher/handler'
+import { handleCustomerMessage } from '@/lib/customer/handler'
 
 /**
  * POST /api/webhook
@@ -52,8 +53,11 @@ if (!validateTwilioSignature(signature, url, params)) {
       const reply = await handleDispatcherMessage(body)
       await sendWhatsApp(from, reply)
     } else {
-      // TODO (PRT-18/19): Customer conversation handler
-      console.log(`[webhook] Customer message from ${from}: "${body}"`)
+      // PRT-18/19: Customer conversation handler
+      const reply = await handleCustomerMessage(from, body)
+      if (reply) {
+        await sendWhatsApp(from, reply)
+      }
     }
   } catch (err) {
     console.error('[webhook] Error handling message:', err)
