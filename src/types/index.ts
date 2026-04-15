@@ -49,6 +49,7 @@ export interface FareResult {
 
 export interface BookingRecord {
   id: string
+  queueNumber: number        // short human-readable queue ID, e.g. 3 → displayed as #3
   customerPhone: string
   serviceType: ServiceType
   pickupAddress: string
@@ -122,7 +123,11 @@ export interface ConversationState {
   stage: ConversationStage
   serviceType?: ServiceType
   pickupAddress?: string
+  pickupLat?: number
+  pickupLng?: number
   dropoffAddress?: string
+  dropoffLat?: number
+  dropoffLng?: number
   passengerCount?: number
   packageSize?: PackageSize
   fragile?: boolean

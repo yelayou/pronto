@@ -37,9 +37,13 @@ if (!validateTwilioSignature(signature, url, params)) {
 
   // ── Parse payload ──────────────────────────────────────────────────────────
   const from = params['From']
-  const body = params['Body']
+  const body = params['Body'] ?? ''
+  // Location pin: Twilio sends Latitude/Longitude when customer shares a pin
+  const lat = params['Latitude'] ? parseFloat(params['Latitude']) : undefined
+  const lng = params['Longitude'] ? parseFloat(params['Longitude']) : undefined
 
-  if (!from || !body) {
+  // Require at least a sender; body may be empty for location pins
+  if (!from) {
     return new NextResponse('Bad request', { status: 400 })
   }
 
@@ -54,7 +58,7 @@ if (!validateTwilioSignature(signature, url, params)) {
       await sendWhatsApp(from, reply)
     } else {
       // PRT-18/19: Customer conversation handler
-      const reply = await handleCustomerMessage(from, body)
+      const reply = await handleCustomerMessage(from, body, lat, lng)
       if (reply) {
         await sendWhatsApp(from, reply)
       }
