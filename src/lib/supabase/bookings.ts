@@ -1,12 +1,33 @@
 import { supabase } from './client'
-import type { BookingRecord, BookingStatus, ServiceType, PaymentMethod, PackageSize } from '@/types'
+import type { BookingRecord, BookingStatus, ServiceType, PaymentMethod, PackageSize, FareResult } from '@/types'
 
 const TABLE = 'bookings'
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface CreateBookingInput {
+  customerPhone: string
+  serviceType: ServiceType
+  pickupAddress: string
+  pickupLat?: number
+  pickupLng?: number
+  dropoffAddress: string
+  dropoffLat?: number
+  dropoffLng?: number
+  fare: number
+  fareBreakdown: FareResult
+  paymentMethod: PaymentMethod
+  passengerCount?: number
+  packageSize?: PackageSize
+  fragile?: boolean
+  recipientName?: string
+  notes?: string
+}
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
 
 /**
- * Fetch a booking by its ID.
+ * Fetch a booking by its UUID.
  */
 export async function getBookingById(id: string): Promise<BookingRecord | null> {
   const { data, error } = await supabase
@@ -24,7 +45,40 @@ export async function getBookingById(id: string): Promise<BookingRecord | null> 
 }
 
 /**
- * Find the most recent active booking (confirmed or arrived).
+ * Fetch a booking by its short queue number (e.g. 3 for #3).
+ */
+export async function getBookingByQueueNumber(
+  queueNumber: number
+): Promise<BookingRecord | null> {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('*')
+    .eq('queue_number', queueNumber)
+    .order('created_at', { ascending: false })
+    .limit(1)
+    .maybeSingle()
+
+  if (error) throw new Error(`Failed to fetch booking #${queueNumber}: ${error.message}`)
+  return data ? rowToBooking(data) : null
+}
+
+/**
+ * Get all pending bookings, oldest first.
+ * Used to build the dispatcher queue notification.
+ */
+export async function getPendingBookings(): Promise<BookingRecord[]> {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .select('*')
+    .eq('status', 'pending')
+    .order('created_at', { ascending: true })
+
+  if (error) throw new Error(`Failed to fetch pending bookings: ${error.message}`)
+  return (data ?? []).map(rowToBooking)
+}
+
+/**
+ * Find the most recent active booking (confirmed, en_route, or arrived).
  * Used by ARRIVED, COMPLETE, NOSHOW commands which operate on the current trip.
  */
 export async function getActiveBooking(): Promise<BookingRecord | null> {
@@ -40,7 +94,42 @@ export async function getActiveBooking(): Promise<BookingRecord | null> {
   return data ? rowToBooking(data) : null
 }
 
-// ─── Update ───────────────────────────────────────────────────────────────────
+// ─── Write ────────────────────────────────────────────────────────────────────
+
+/**
+ * Create a new booking from a completed customer conversation.
+ * queue_number is assigned automatically by a Supabase sequence.
+ */
+export async function createBooking(
+  input: CreateBookingInput
+): Promise<BookingRecord> {
+  const { data, error } = await supabase
+    .from(TABLE)
+    .insert({
+      customer_phone: input.customerPhone,
+      service_type: input.serviceType,
+      pickup_address: input.pickupAddress,
+      pickup_lat: input.pickupLat ?? null,
+      pickup_lng: input.pickupLng ?? null,
+      dropoff_address: input.dropoffAddress,
+      dropoff_lat: input.dropoffLat ?? null,
+      dropoff_lng: input.dropoffLng ?? null,
+      fare: input.fare,
+      fare_breakdown: input.fareBreakdown,
+      payment_method: input.paymentMethod,
+      passenger_count: input.passengerCount ?? null,
+      package_size: input.packageSize ?? null,
+      fragile: input.fragile ?? false,
+      recipient_name: input.recipientName ?? null,
+      notes: input.notes ?? null,
+      status: 'pending',
+    })
+    .select()
+    .single()
+
+  if (error) throw new Error(`Failed to create booking: ${error.message}`)
+  return rowToBooking(data)
+}
 
 /**
  * Update booking status and touch updated_at.
@@ -88,6 +177,7 @@ export async function logIncident(
 function rowToBooking(row: Record<string, unknown>): BookingRecord {
   return {
     id: row.id as string,
+    queueNumber: row.queue_number as number,
     customerPhone: row.customer_phone as string,
     serviceType: row.service_type as ServiceType,
     pickupAddress: row.pickup_address as string,

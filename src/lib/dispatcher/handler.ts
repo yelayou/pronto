@@ -8,8 +8,9 @@
 import { parseDispatcherCommand } from './commands'
 import { setOnDuty, setOffDuty } from '@/lib/supabase/dispatcher'
 import {
-  getBookingById,
+  getBookingByQueueNumber,
   getActiveBooking,
+  getPendingBookings,
   updateBookingStatus,
   logIncident,
 } from '@/lib/supabase/bookings'
@@ -42,27 +43,35 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
     // ── Booking lifecycle ──────────────────────────────────────────────────────
 
     case 'CONFIRM': {
-      const booking = await getBookingById(command.bookingId)
-      if (!booking) return `❌ Booking *${command.bookingId}* not found.`
+      const booking = await getBookingByQueueNumber(command.queueNumber)
+      if (!booking) return `❌ Booking *#${command.queueNumber}* not found.`
       if (booking.status !== 'pending') {
-        return `⚠️ Booking *${command.bookingId}* is already *${booking.status}*.`
+        return `⚠️ Booking *#${command.queueNumber}* is already *${booking.status}*.`
       }
 
       await updateBookingStatus(booking.id, 'confirmed')
 
       await sendWhatsApp(
         booking.customerPhone,
-        `✅ Your booking is confirmed! Your driver is on the way to *${booking.pickupAddress}*.\n\nWe'll notify you when they arrive.`
+        `✅ Your booking is confirmed! Your driver is on the way to *${booking.pickupAddress}*.\n\nWe'll notify you when they arrive. 🚗`
       )
 
-      return `✅ Confirmed booking *${command.bookingId}*. Customer notified.`
+      // Show remaining queue after confirming
+      const remaining = await getPendingBookings()
+      const queueSuffix = remaining.length > 0
+        ? `\n\n*${remaining.length} booking(s) still pending:*\n` + remaining.map((b, i) =>
+            `${i + 1}️⃣  *#${b.queueNumber}* — ${b.serviceType === 'ride' ? '🚗' : '📦'} ${b.pickupAddress} → ${b.dropoffAddress}`
+          ).join('\n')
+        : `\n\nNo more pending bookings.`
+
+      return `✅ Confirmed *#${command.queueNumber}*. Customer notified.${queueSuffix}`
     }
 
     case 'DECLINE': {
-      const booking = await getBookingById(command.bookingId)
-      if (!booking) return `❌ Booking *${command.bookingId}* not found.`
+      const booking = await getBookingByQueueNumber(command.queueNumber)
+      if (!booking) return `❌ Booking *#${command.queueNumber}* not found.`
       if (booking.status !== 'pending') {
-        return `⚠️ Booking *${command.bookingId}* is already *${booking.status}*.`
+        return `⚠️ Booking *#${command.queueNumber}* is already *${booking.status}*.`
       }
 
       await updateBookingStatus(booking.id, 'declined')
@@ -72,7 +81,14 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
         `Sorry, we're unable to accept your booking at this time. Please try again in a few minutes. 🙏`
       )
 
-      return `🚫 Declined booking *${command.bookingId}*. Customer notified.`
+      const remaining = await getPendingBookings()
+      const queueSuffix = remaining.length > 0
+        ? `\n\n*${remaining.length} booking(s) still pending:*\n` + remaining.map((b, i) =>
+            `${i + 1}️⃣  *#${b.queueNumber}* — ${b.serviceType === 'ride' ? '🚗' : '📦'} ${b.pickupAddress} → ${b.dropoffAddress}`
+          ).join('\n')
+        : `\n\nNo more pending bookings.`
+
+      return `🚫 Declined *#${command.queueNumber}*. Customer notified.${queueSuffix}`
     }
 
     case 'ARRIVED': {
@@ -126,6 +142,6 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
 
     case 'UNKNOWN':
     default:
-      return `❓ Unrecognised command: "${command.raw}"\n\nValid commands:\nON DUTY [zone]\nOFF DUTY\nCONFIRM [id]\nDECLINE [id]\nARRIVED\nCOMPLETE\nNOSHOW`
+      return `❓ Unrecognised command: "${command.raw}"\n\nValid commands:\nON DUTY [zone]\nOFF DUTY\nCONFIRM [#]\nDECLINE [#]\nARRIVED\nCOMPLETE\nNOSHOW`
   }
 }

@@ -3,13 +3,15 @@
  *
  * Parses raw WhatsApp message text from the dispatcher into structured commands.
  * All matching is case-insensitive and whitespace-tolerant.
+ *
+ * CONFIRM / DECLINE accept a queue number (e.g. CONFIRM 3) or a prefixed short ID (CONFIRM #3).
  */
 
 export type DispatcherCommand =
   | { type: 'ON_DUTY'; zone: string }
   | { type: 'OFF_DUTY' }
-  | { type: 'CONFIRM'; bookingId: string }
-  | { type: 'DECLINE'; bookingId: string }
+  | { type: 'CONFIRM'; queueNumber: number }
+  | { type: 'DECLINE'; queueNumber: number }
   | { type: 'ARRIVED' }
   | { type: 'COMPLETE' }
   | { type: 'NOSHOW' }
@@ -32,16 +34,16 @@ export function parseDispatcherCommand(body: string): DispatcherCommand {
     return { type: 'OFF_DUTY' }
   }
 
-  // CONFIRM <id>  e.g. "CONFIRM abc-123"
-  const confirmMatch = text.match(/^confirm\s+(\S+)$/i)
+  // CONFIRM <number> or CONFIRM #<number>  e.g. "CONFIRM 3" or "CONFIRM #3"
+  const confirmMatch = text.match(/^confirm\s+#?(\d+)$/i)
   if (confirmMatch) {
-    return { type: 'CONFIRM', bookingId: confirmMatch[1] }
+    return { type: 'CONFIRM', queueNumber: parseInt(confirmMatch[1], 10) }
   }
 
-  // DECLINE <id>  e.g. "DECLINE abc-123"
-  const declineMatch = text.match(/^decline\s+(\S+)$/i)
+  // DECLINE <number> or DECLINE #<number>  e.g. "DECLINE 3" or "DECLINE #3"
+  const declineMatch = text.match(/^decline\s+#?(\d+)$/i)
   if (declineMatch) {
-    return { type: 'DECLINE', bookingId: declineMatch[1] }
+    return { type: 'DECLINE', queueNumber: parseInt(declineMatch[1], 10) }
   }
 
   if (/^arrived$/i.test(text)) return { type: 'ARRIVED' }
