@@ -15,6 +15,7 @@ import {
   logIncident,
 } from '@/lib/supabase/bookings'
 import { sendWhatsApp } from '@/lib/twilio/client'
+import { resetConversation } from '@/lib/supabase/conversations'
 
 const NOSHOW_FEE = 5.00
 
@@ -75,6 +76,7 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
       }
 
       await updateBookingStatus(booking.id, 'declined')
+      await resetConversation(booking.customerPhone)
 
       await sendWhatsApp(
         booking.customerPhone,
@@ -114,13 +116,14 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
       }
 
       await updateBookingStatus(booking.id, 'complete')
+      await resetConversation(booking.customerPhone)
 
       await sendWhatsApp(
         booking.customerPhone,
         `Thank you for riding with Pronto! 🚗 Have a great day. Book again anytime by messaging us here.`
       )
 
-      return `✅ Booking *${booking.id.slice(0, 8)}* marked COMPLETE. Ride closed.`
+      return `✅ Booking *#${booking.queueNumber}* marked COMPLETE. Ride closed.`
     }
 
     case 'NOSHOW': {
@@ -129,6 +132,7 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
 
       await updateBookingStatus(booking.id, 'noshow')
       await logIncident(booking.customerPhone, booking.id, 'noshow', NOSHOW_FEE)
+      await resetConversation(booking.customerPhone)
 
       await sendWhatsApp(
         booking.customerPhone,
