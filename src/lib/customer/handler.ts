@@ -22,6 +22,7 @@ import {
 } from '@/lib/supabase/conversations'
 import { createBooking, getPendingBookings } from '@/lib/supabase/bookings'
 import { geocodeAddress, reverseGeocode, getRoute } from '@/lib/maps/client'
+import { validateGTALocation } from '@/lib/geofence/gta'
 import { calculateFare, formatFareForCustomer } from '@/lib/fare/calculator'
 import { sendWhatsApp } from '@/lib/twilio/client'
 import type { ConversationState, ServiceType, PackageSize, PaymentMethod, TimeOfDay } from '@/types'
@@ -154,6 +155,18 @@ async function handlePickup(
     pickupLng = geo.lng
   }
 
+  // ── Geofence check ─────────────────────────────────────────────────────────
+  if (pickupLat !== undefined && pickupLng !== undefined) {
+    const fence = validateGTALocation(pickupLat, pickupLng)
+    if (!fence.withinGTA) {
+      return (
+        `📍 *${pickupAddress}*\n\n` +
+        `${fence.reason} We currently serve Toronto and the surrounding GTA.\n\n` +
+        `Please provide a pickup address within the GTA.`
+      )
+    }
+  }
+
   await upsertConversationState({
     ...convo,
     stage: 'awaiting_dropoff',
@@ -193,6 +206,18 @@ async function handleDropoff(
     dropoffAddress = geo.formattedAddress
     dropoffLat = geo.lat
     dropoffLng = geo.lng
+  }
+
+  // ── Geofence check ─────────────────────────────────────────────────────────
+  if (dropoffLat !== undefined && dropoffLng !== undefined) {
+    const fence = validateGTALocation(dropoffLat, dropoffLng)
+    if (!fence.withinGTA) {
+      return (
+        `📍 *${dropoffAddress}*\n\n` +
+        `${fence.reason} We currently serve Toronto and the surrounding GTA.\n\n` +
+        `Please provide a drop-off address within the GTA.`
+      )
+    }
   }
 
   const updated: Omit<ConversationState, 'updatedAt'> = {
