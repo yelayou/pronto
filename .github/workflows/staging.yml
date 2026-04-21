@@ -52,6 +52,8 @@ jobs:
           echo "deploy-url=$DEPLOY_URL" >> $GITHUB_OUTPUT
 
       - name: Smoke test staging
+        env:
+          VERCEL_AUTOMATION_BYPASS_SECRET: ${{ secrets.VERCEL_AUTOMATION_BYPASS_SECRET }}
         run: STAGING_URL=${{ steps.deploy.outputs.deploy-url }} npm run smoke
 
       - name: Notify on failure
