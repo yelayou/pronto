@@ -8,6 +8,14 @@
  */
 
 const BASE = process.env.STAGING_URL ?? 'http://localhost:3000'
+const BYPASS_SECRET = process.env.VERCEL_AUTOMATION_BYPASS_SECRET
+
+// When Vercel Deployment Protection is enabled, CI requests must include this
+// header to bypass SSO auth. Has no effect when running locally or when
+// protection is disabled.
+const bypassHeaders: Record<string, string> = BYPASS_SECRET
+  ? { 'x-vercel-protection-bypass': BYPASS_SECRET }
+  : {}
 
 async function run() {
   console.log(`\n🔥 Smoke tests → ${BASE}\n`)
@@ -16,7 +24,7 @@ async function run() {
 
   // ── Test 1: Health endpoint ──────────────────────────────────────────────
   try {
-    const res = await fetch(`${BASE}/api/health`)
+    const res = await fetch(`${BASE}/api/health`, { headers: bypassHeaders })
     if (res.status === 200) {
       const json = await res.json()
       if (json.status === 'ok') {
@@ -44,11 +52,16 @@ async function run() {
     })
     const res = await fetch(`${BASE}/api/webhook`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...bypassHeaders },
       body: body.toString(),
     })
     if (res.status === 200) {
       console.log('✅  POST /api/webhook → 200 ok')
+      passed++
+    } else if (res.status === 403) {
+      // 403 means signature validation is active and correctly rejected the
+      // unsigned smoke request — the endpoint is alive and auth is working.
+      console.log('✅  POST /api/webhook → 403 (signature validation active)')
       passed++
     } else {
       throw new Error(`status ${res.status}`)
@@ -62,7 +75,7 @@ async function run() {
   try {
     const res = await fetch(`${BASE}/api/fare`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...bypassHeaders },
       body: JSON.stringify({
         distanceKm: 25,
         durationMin: 30,
