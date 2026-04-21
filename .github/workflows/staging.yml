@@ -39,17 +39,20 @@ jobs:
         run: npm run test -- --reporter=verbose
 
       - name: Deploy to staging
-        uses: amondnet/vercel-action@v25
-        with:
-          vercel-token: ${{ secrets.VERCEL_TOKEN }}
-          vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
-          vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
-          vercel-args: '--prod'
-          alias-domains: staging.pronto.vercel.app
         id: deploy
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+        run: |
+          npm i -g vercel@latest
+          vercel pull --yes --environment=production --token=$VERCEL_TOKEN
+          vercel build --prod --token=$VERCEL_TOKEN
+          DEPLOY_URL=$(vercel deploy --prebuilt --prod --token=$VERCEL_TOKEN)
+          echo "deploy-url=$DEPLOY_URL" >> $GITHUB_OUTPUT
 
       - name: Smoke test staging
-        run: STAGING_URL=${{ steps.deploy.outputs.preview-url }} npm run smoke
+        run: STAGING_URL=${{ steps.deploy.outputs.deploy-url }} npm run smoke
 
       - name: Notify on failure
         if: failure()
