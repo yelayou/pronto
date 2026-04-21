@@ -58,6 +58,11 @@ async function run() {
     if (res.status === 200) {
       console.log('✅  POST /api/webhook → 200 ok')
       passed++
+    } else if (res.status === 403) {
+      // 403 means signature validation is active and correctly rejected the
+      // unsigned smoke request — the endpoint is alive and auth is working.
+      console.log('✅  POST /api/webhook → 403 (signature validation active)')
+      passed++
     } else {
       throw new Error(`status ${res.status}`)
     }
