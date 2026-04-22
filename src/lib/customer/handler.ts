@@ -1,16 +1,22 @@
 /**
- * Pronto — Customer message handler
+ * Pronto — Customer message handler (PRT-66)
  *
- * Handles all inbound WhatsApp messages from customers.
- * Manages the per-customer conversation state machine persisted in Supabase.
+ * Refactored from a rigid keyword state machine to a Claude NLU-driven
+ * conversational handler. Key changes:
  *
- * Conversation stages:
- *   idle → awaiting_service → awaiting_pickup → awaiting_dropoff
- *     → awaiting_pax (ride) | awaiting_pkg_size → awaiting_recipient (pkg)
- *     → awaiting_payment → awaiting_confirm → confirmed
+ *  - Every message goes through extractIntent() — fields are captured
+ *    opportunistically rather than one-per-prompt
+ *  - Greetings are dynamic via buildGreeting() (holiday/season/time aware)
+ *  - Ambiguous landmarks (Pearson, Union Station, Billy Bishop) trigger a
+ *    sub-location prompt via the awaiting_landmark stage
+ *  - Booking confirmation is a single prose summary with ±5% fare range
  *
- * PRT-18: Greeting + service selection
- * PRT-19: Full booking detail collection, fare calculation, booking creation
+ * PRT-62: greeting system
+ * PRT-63: NLU intent extraction
+ * PRT-64: landmark lookup table
+ * PRT-65: pendingLandmark type + Supabase schema
+ * PRT-66: this handler refactor
+ * PRT-67: prose confirmation summary (implemented here)
  */
 
 import { getDispatcherState } from '@/lib/supabase/dispatcher'
@@ -25,7 +31,15 @@ import { geocodeAddress, reverseGeocode, getRoute } from '@/lib/maps/client'
 import { validateGTALocation } from '@/lib/geofence/gta'
 import { calculateFare, formatFareForCustomer } from '@/lib/fare/calculator'
 import { sendWhatsApp } from '@/lib/twilio/client'
-import type { ConversationState, ServiceType, PackageSize, PaymentMethod, TimeOfDay } from '@/types'
+import { buildGreeting } from '@/lib/customer/greetings'
+import { extractIntent } from '@/lib/customer/intent'
+import { findLandmark, getLandmarkOption } from '@/lib/landmarks'
+import type {
+  ConversationState,
+  ConversationStage,
+  TimeOfDay,
+  PendingLandmark,
+} from '@/types'
 
 const DISPATCHER_PHONE = process.env.DISPATCHER_PHONE!
 
@@ -34,10 +48,9 @@ const DISPATCHER_PHONE = process.env.DISPATCHER_PHONE!
 /**
  * Handle an inbound message from a customer.
  * @param from  Customer WhatsApp number (e.g. "whatsapp:+14165550123")
- * @param body  Raw message text (may be empty if location pin was shared)
+ * @param body  Raw message text
  * @param lat   Latitude if customer shared a location pin
  * @param lng   Longitude if customer shared a location pin
- * @returns     Reply text to send back, or null to stay silent
  */
 export async function handleCustomerMessage(
   from: string,
@@ -49,66 +62,51 @@ export async function handleCustomerMessage(
   const text = body.trim()
   const isPin = lat !== undefined && lng !== undefined
 
-  // ── 1. Check dispatcher duty status ────────────────────────────────────────
+  // ── 1. Dispatcher duty check ───────────────────────────────────────────────
   const dispatcher = await getDispatcherState()
   if (!dispatcher || dispatcher.dutyStatus === 'off') {
     return offDutyMessage()
   }
 
-  // ── 2. Ensure customer record exists ───────────────────────────────────────
+  // ── 2. Customer record ─────────────────────────────────────────────────────
   const customer = await upsertCustomer(phone)
 
-  // ── 3. Load or initialise conversation state ───────────────────────────────
-  let convo = await getConversationState(phone)
+  // ── 3. Conversation state ──────────────────────────────────────────────────
+  const convo = await getConversationState(phone)
 
+  // ── 4. Fresh / idle start ─────────────────────────────────────────────────
   if (!convo || convo.stage === 'idle') {
     if (!customer.name) {
-      // First-time customer — collect name before showing the service menu
       await upsertConversationState({ customerPhone: phone, stage: 'awaiting_name' })
-      return `Hi! Welcome to *Pronto* 👋\n\nBefore we get started, what's your name?`
+      const greeting = buildGreeting(undefined, phone)
+      return `${greeting}\n\nBefore we get started, what's your name?`
     }
-    // Returning customer with a known name
     await upsertConversationState({ customerPhone: phone, stage: 'awaiting_service' })
-    return greetingMessage(customer.name)
+    return `${buildGreeting(customer.name, phone)}\n\n${serviceMenuMessage()}`
   }
 
-  // ── 4. Route to stage handler ──────────────────────────────────────────────
-  switch (convo.stage) {
-    case 'awaiting_name':
-      return handleNameCollection(phone, text, convo)
-
-    case 'awaiting_service':
-      return handleServiceSelection(phone, text, convo)
-
-    case 'awaiting_pickup':
-      return handlePickup(phone, text, convo, isPin, lat, lng)
-
-    case 'awaiting_dropoff':
-      return handleDropoff(phone, text, convo, isPin, lat, lng)
-
-    case 'awaiting_pax':
-      return handlePassengerCount(phone, text, convo)
-
-    case 'awaiting_pkg_size':
-      return handlePackageSize(phone, text, convo)
-
-    case 'awaiting_recipient':
-      return handleRecipient(phone, text, convo)
-
-    case 'awaiting_payment':
-      return handlePayment(phone, text, convo)
-
-    case 'awaiting_confirm':
-      return handleConfirm(phone, text, convo)
-
-    case 'confirmed':
-      // Booking already submitted — gentle nudge
-      return `Your booking is already confirmed and waiting for the driver. We'll message you as soon as it's accepted! 🙏`
-
-    default:
-      await resetConversation(phone)
-      return greetingMessage(customer.name)
+  // ── 5. First-time name collection ──────────────────────────────────────────
+  if (convo.stage === 'awaiting_name') {
+    return handleNameCollection(phone, text, convo)
   }
+
+  // ── 6. Already confirmed — gentle nudge ───────────────────────────────────
+  if (convo.stage === 'confirmed') {
+    return `Your booking is confirmed and waiting for the driver. We'll message you as soon as it's accepted! 🙏`
+  }
+
+  // ── 7. Landmark disambiguation — waiting for sub-location choice ───────────
+  if (convo.stage === 'awaiting_landmark' && convo.pendingLandmark) {
+    return handleLandmarkResolution(phone, text, convo, isPin, lat, lng)
+  }
+
+  // ── 8. Awaiting booking confirmation ──────────────────────────────────────
+  if (convo.stage === 'awaiting_confirm') {
+    return handleConfirmation(phone, text, convo, customer.name)
+  }
+
+  // ── 9. All other stages — run NLU extraction ──────────────────────────────
+  return handleWithNLU(phone, text, convo, customer.name, isPin, lat, lng)
 }
 
 // ─── Stage handlers ───────────────────────────────────────────────────────────
@@ -123,7 +121,6 @@ async function handleNameCollection(
     return `Sorry, I didn't catch that! What's your name?`
   }
 
-  // Save name and advance to service selection in parallel
   await Promise.all([
     updateCustomerName(phone, name),
     upsertConversationState({ ...convo, stage: 'awaiting_service' }),
@@ -136,27 +133,11 @@ async function handleNameCollection(
   )
 }
 
-async function handleServiceSelection(
-  phone: string,
-  text: string,
-  convo: ConversationState
-): Promise<string> {
-  const lower = text.toLowerCase()
-  let serviceType: ServiceType | null = null
-
-  if (lower === '1' || lower === 'ride') serviceType = 'ride'
-  else if (lower === '2' || lower === 'delivery' || lower === 'package' || lower === 'package delivery') serviceType = 'package'
-
-  if (!serviceType) return serviceMenuMessage()
-
-  await upsertConversationState({ ...convo, stage: 'awaiting_pickup', serviceType })
-
-  return serviceType === 'ride'
-    ? `🚗 Great, let's get your ride booked!\n\nWhat's the *pickup address*? You can type the address or 📍 *share your location*.`
-    : `📦 Package delivery — got it!\n\nWhat's the *pickup address* (where we're collecting from)? Type the address or 📍 *share your location*.`
-}
-
-async function handlePickup(
+/**
+ * Resolve the customer's sub-location choice for an ambiguous landmark.
+ * Handles both numbered options ("1", "2") and location pin sharing.
+ */
+async function handleLandmarkResolution(
   phone: string,
   text: string,
   convo: ConversationState,
@@ -164,278 +145,280 @@ async function handlePickup(
   lat?: number,
   lng?: number
 ): Promise<string> {
-  let pickupAddress: string
-  let pickupLat: number | undefined
-  let pickupLng: number | undefined
+  const pending = convo.pendingLandmark!
 
-  if (isPin) {
-    // Location pin shared
-    pickupLat = lat
-    pickupLng = lng
-    pickupAddress = await reverseGeocode(lat!, lng!)
-  } else {
-    if (!text) return `Please type a pickup address or share your 📍 location.`
-    const geo = await geocodeAddress(text)
-    if (!geo) {
-      return `I couldn't find that address. Could you try again with a more specific address? (e.g. *123 Main St, Toronto*)`
-    }
-    pickupAddress = geo.formattedAddress
-    pickupLat = geo.lat
-    pickupLng = geo.lng
+  // Customer shared a location pin — use it directly
+  if (isPin && lat !== undefined && lng !== undefined) {
+    const address = await reverseGeocode(lat, lng)
+    const updated =
+      pending.field === 'pickup'
+        ? { ...convo, pickupAddress: address, pickupLat: lat, pickupLng: lng }
+        : { ...convo, dropoffAddress: address, dropoffLat: lat, dropoffLng: lng }
+
+    const nextStage = computeNextStage({ ...updated, pendingLandmark: undefined })
+    await upsertConversationState({ ...updated, stage: nextStage, pendingLandmark: undefined })
+    return nextPromptForStage(nextStage, updated)
   }
 
-  // ── Geofence check ─────────────────────────────────────────────────────────
-  if (pickupLat !== undefined && pickupLng !== undefined) {
-    const fence = validateGTALocation(pickupLat, pickupLng)
-    if (!fence.withinGTA) {
-      return (
-        `📍 *${pickupAddress}*\n\n` +
-        `${fence.reason} We currently serve Toronto and the surrounding GTA.\n\n` +
-        `Please provide a pickup address within the GTA.`
-      )
-    }
+  // Parse numbered option ("1", "2", "3")
+  const optionIndex = parseInt(text.trim(), 10) - 1
+  const option = getLandmarkOption(pending.landmarkId, optionIndex)
+
+  if (!option) {
+    const landmark = findLandmark(pending.landmarkId)
+    const optionCount = landmark?.options.length ?? 2
+    return `Please reply with a number (1–${optionCount}) to choose a spot, or share your 📍 location pin.`
   }
 
-  await upsertConversationState({
-    ...convo,
-    stage: 'awaiting_dropoff',
-    pickupAddress,
-    pickupLat,
-    pickupLng,
-  })
+  const updated =
+    pending.field === 'pickup'
+      ? { ...convo, pickupAddress: option.label, pickupLat: option.lat, pickupLng: option.lng }
+      : { ...convo, dropoffAddress: option.label, dropoffLat: option.lat, dropoffLng: option.lng }
 
-  return (
-    `📍 Pickup: *${pickupAddress}*\n\n` +
-    `Now, what's the *drop-off address*? Type the address or 📍 *share a location pin*.`
-  )
+  const nextStage = computeNextStage({ ...updated, pendingLandmark: undefined })
+  await upsertConversationState({ ...updated, stage: nextStage, pendingLandmark: undefined })
+
+  const pinLabel = pending.field === 'pickup'
+    ? `📍 Pickup set to *${option.label}*`
+    : `📍 Drop-off set to *${option.label}*`
+
+  return `${pinLabel}\n\n${nextPromptForStage(nextStage, updated)}`
 }
 
-async function handleDropoff(
+/**
+ * NLU-driven handler for all non-special stages.
+ * Extracts fields from the message, merges into conversation state,
+ * checks for landmark disambiguation, and advances to the furthest possible stage.
+ */
+async function handleWithNLU(
   phone: string,
   text: string,
   convo: ConversationState,
+  customerName: string | undefined,
   isPin: boolean,
   lat?: number,
   lng?: number
 ): Promise<string> {
-  let dropoffAddress: string
-  let dropoffLat: number | undefined
-  let dropoffLng: number | undefined
-
-  if (isPin) {
-    dropoffLat = lat
-    dropoffLng = lng
-    dropoffAddress = await reverseGeocode(lat!, lng!)
-  } else {
-    if (!text) return `Please type a drop-off address or share your 📍 location.`
-    const geo = await geocodeAddress(text)
-    if (!geo) {
-      return `I couldn't find that address. Try again with a specific address (e.g. *456 Queen St W, Toronto*)`
-    }
-    dropoffAddress = geo.formattedAddress
-    dropoffLat = geo.lat
-    dropoffLng = geo.lng
+  // Location pin — handle directly without NLU
+  if (isPin && lat !== undefined && lng !== undefined) {
+    return handleLocationPin(phone, lat, lng, convo)
   }
 
-  // ── Geofence check ─────────────────────────────────────────────────────────
-  if (dropoffLat !== undefined && dropoffLng !== undefined) {
-    const fence = validateGTALocation(dropoffLat, dropoffLng)
-    if (!fence.withinGTA) {
-      return (
-        `📍 *${dropoffAddress}*\n\n` +
-        `${fence.reason} We currently serve Toronto and the surrounding GTA.\n\n` +
-        `Please provide a drop-off address within the GTA.`
-      )
-    }
-  }
+  // Run Claude NLU extraction
+  const intent = await extractIntent(text, convo, customerName)
 
-  const updated: Omit<ConversationState, 'updatedAt'> = {
+  // Merge extracted fields into conversation state
+  const merged: Omit<ConversationState, 'updatedAt'> = {
     ...convo,
-    dropoffAddress,
-    dropoffLat,
-    dropoffLng,
+    ...(intent.serviceType && { serviceType: intent.serviceType }),
+    ...(intent.pickupAddress && { pickupAddress: intent.pickupAddress, pickupLat: undefined, pickupLng: undefined }),
+    ...(intent.dropoffAddress && { dropoffAddress: intent.dropoffAddress, dropoffLat: undefined, dropoffLng: undefined }),
+    ...(intent.passengerCount !== undefined && { passengerCount: intent.passengerCount }),
+    ...(intent.packageSize && { packageSize: intent.packageSize }),
+    ...(intent.fragile !== undefined && { fragile: intent.fragile }),
+    ...(intent.recipientName && { recipientName: intent.recipientName }),
+    ...(intent.paymentMethod && { paymentMethod: intent.paymentMethod }),
   }
 
-  // Advance to next stage depending on service type
-  if (convo.serviceType === 'ride') {
-    await upsertConversationState({ ...updated, stage: 'awaiting_pax' })
-    return (
-      `📍 Drop-off: *${dropoffAddress}*\n\n` +
-      `How many *passengers*? (including yourself)`
-    )
-  } else {
-    await upsertConversationState({ ...updated, stage: 'awaiting_pkg_size' })
-    return (
-      `📍 Drop-off: *${dropoffAddress}*\n\n` +
-      `What size is the package?\n\n` +
-      `1️⃣  *Small* — fits in a backpack\n` +
-      `2️⃣  *Large* — needs both hands\n\n` +
-      `Reply *1* or *2*.`
-    )
+  // Landmark disambiguation
+  if (intent.needsDisambiguation && intent.disambiguationField && intent.landmarkId) {
+    const landmark = findLandmark(intent.landmarkId)
+    if (landmark) {
+      const pendingLandmark: PendingLandmark = {
+        field: intent.disambiguationField,
+        landmarkId: intent.landmarkId,
+      }
+      await upsertConversationState({ ...merged, stage: 'awaiting_landmark', pendingLandmark })
+      return landmark.prompt
+    }
   }
+
+  // Advance to furthest possible stage
+  const nextStage = computeNextStage(merged)
+
+  if (nextStage === 'awaiting_confirm') {
+    return buildAndShowConfirmation(phone, merged)
+  }
+
+  await upsertConversationState({ ...merged, stage: nextStage })
+  return nextPromptForStage(nextStage, merged)
 }
 
-async function handlePassengerCount(
+/**
+ * Handle a WhatsApp location pin at any pickup/dropoff stage.
+ */
+async function handleLocationPin(
   phone: string,
-  text: string,
+  lat: number,
+  lng: number,
   convo: ConversationState
 ): Promise<string> {
-  const n = parseInt(text, 10)
-  if (isNaN(n) || n < 1 || n > 6) {
-    return `Please enter a number between 1 and 6.`
+  const fence = validateGTALocation(lat, lng)
+  if (!fence.withinGTA) {
+    return (
+      `${fence.reason} We currently serve Toronto and the surrounding GTA.\n\n` +
+      `Please provide an address or share a location pin within the GTA.`
+    )
   }
 
-  await upsertConversationState({
-    ...convo,
-    stage: 'awaiting_payment',
-    passengerCount: n,
-  })
+  const address = await reverseGeocode(lat, lng)
+  const needsPickup = !convo.pickupAddress || convo.stage === 'awaiting_pickup' || convo.stage === 'awaiting_service'
 
-  return paymentPrompt()
+  const merged = needsPickup
+    ? { ...convo, pickupAddress: address, pickupLat: lat, pickupLng: lng }
+    : { ...convo, dropoffAddress: address, dropoffLat: lat, dropoffLng: lng }
+
+  const nextStage = computeNextStage(merged)
+
+  if (nextStage === 'awaiting_confirm') {
+    return buildAndShowConfirmation(phone, merged)
+  }
+
+  await upsertConversationState({ ...merged, stage: nextStage })
+
+  const pinLabel = needsPickup ? 'Pickup' : 'Drop-off'
+  return `📍 ${pinLabel}: *${address}*\n\n${nextPromptForStage(nextStage, merged)}`
 }
 
-async function handlePackageSize(
+/**
+ * Interpret natural language confirmation, correction, or cancellation.
+ */
+async function handleConfirmation(
   phone: string,
   text: string,
-  convo: ConversationState
+  convo: ConversationState,
+  customerName: string | undefined
 ): Promise<string> {
-  const lower = text.toLowerCase()
-  let packageSize: PackageSize | null = null
+  const intent = await extractIntent(text, convo, customerName)
 
-  if (lower === '1' || lower === 'small') packageSize = 'small'
-  else if (lower === '2' || lower === 'large') packageSize = 'large'
-
-  if (!packageSize) {
-    return `Please reply *1* for Small or *2* for Large.`
+  if (intent.confirmationIntent === 'cancel') {
+    await resetConversation(phone)
+    return `Booking cancelled. No problem — message us anytime to start a new one! 🙏`
   }
 
-  // Ask about fragile
-  await upsertConversationState({
-    ...convo,
-    stage: 'awaiting_recipient',
-    packageSize,
-  })
+  if (intent.confirmationIntent === 'confirm') {
+    return submitBooking(phone, convo)
+  }
 
+  if (intent.confirmationIntent === 'correction') {
+    const updated: Omit<ConversationState, 'updatedAt'> = {
+      ...convo,
+      ...(intent.serviceType && { serviceType: intent.serviceType }),
+      ...(intent.pickupAddress && { pickupAddress: intent.pickupAddress, pickupLat: undefined, pickupLng: undefined }),
+      ...(intent.dropoffAddress && { dropoffAddress: intent.dropoffAddress, dropoffLat: undefined, dropoffLng: undefined }),
+      ...(intent.passengerCount !== undefined && { passengerCount: intent.passengerCount }),
+      ...(intent.packageSize && { packageSize: intent.packageSize }),
+      ...(intent.fragile !== undefined && { fragile: intent.fragile }),
+      ...(intent.recipientName && { recipientName: intent.recipientName }),
+      ...(intent.paymentMethod && { paymentMethod: intent.paymentMethod }),
+    }
+    return buildAndShowConfirmation(phone, updated)
+  }
+
+  // Unclear — re-show summary
   return (
-    `Got it — *${packageSize}* package.\n\n` +
-    `Is it fragile? Reply *yes* or *no*.\n` +
-    `_(Fragile items get extra care, +$3.00)_`
+    buildProseSummary(convo) +
+    `\n\nDoes that look right? Just say *yes* to confirm or let me know what to change.`
   )
 }
 
-async function handleRecipient(
+// ─── Confirmation summary & booking creation ──────────────────────────────────
+
+/**
+ * Geocode addresses (if needed), calculate fare, save state, and return prose summary.
+ */
+async function buildAndShowConfirmation(
   phone: string,
-  text: string,
-  convo: ConversationState
+  convo: Omit<ConversationState, 'updatedAt'>
 ): Promise<string> {
-  const lower = text.toLowerCase()
-
-  // First message in this stage is fragile answer
-  if (convo.fragile === undefined) {
-    const fragile = lower === 'yes' || lower === 'y'
-    await upsertConversationState({ ...convo, fragile })
-    return `What's the *recipient's name*? (Who should the driver ask for at the drop-off?)`
-  }
-
-  // Second message is recipient name
-  if (!text || text.length < 2) return `Please enter the recipient's name.`
-
-  await upsertConversationState({
-    ...convo,
-    stage: 'awaiting_payment',
-    recipientName: text,
-  })
-
-  return paymentPrompt()
-}
-
-async function handlePayment(
-  phone: string,
-  text: string,
-  convo: ConversationState
-): Promise<string> {
-  const lower = text.toLowerCase()
-  let paymentMethod: PaymentMethod | null = null
-
-  if (lower === '1' || lower === 'cash') paymentMethod = 'cash'
-  else if (lower === '2' || lower === 'etransfer' || lower === 'e-transfer' || lower === 'e transfer') paymentMethod = 'etransfer'
-
-  if (!paymentMethod) {
-    return paymentPrompt()
-  }
-
-  // ── Resolve coordinates in parallel (PRT-32) ──────────────────────────────
-  // If lat/lng weren't captured (text address entry), geocode both in parallel
-  // before fetching the route — cuts latency by ~50% vs sequential calls.
-  let pickupCoords = convo.pickupLat && convo.pickupLng
-    ? { lat: convo.pickupLat, lng: convo.pickupLng }
-    : null
-  let dropoffCoords = convo.dropoffLat && convo.dropoffLng
-    ? { lat: convo.dropoffLat, lng: convo.dropoffLng }
-    : null
+  let pickupCoords =
+    convo.pickupLat && convo.pickupLng ? { lat: convo.pickupLat, lng: convo.pickupLng } : null
+  let dropoffCoords =
+    convo.dropoffLat && convo.dropoffLng ? { lat: convo.dropoffLat, lng: convo.dropoffLng } : null
 
   if (!pickupCoords || !dropoffCoords) {
     const [pickupGeo, dropoffGeo] = await Promise.all([
-      !pickupCoords ? geocodeAddress(convo.pickupAddress!) : Promise.resolve(null),
-      !dropoffCoords ? geocodeAddress(convo.dropoffAddress!) : Promise.resolve(null),
+      !pickupCoords && convo.pickupAddress ? geocodeAddress(convo.pickupAddress) : Promise.resolve(null),
+      !dropoffCoords && convo.dropoffAddress ? geocodeAddress(convo.dropoffAddress) : Promise.resolve(null),
     ])
-    if (pickupGeo) pickupCoords = { lat: pickupGeo.lat, lng: pickupGeo.lng }
-    if (dropoffGeo) dropoffCoords = { lat: dropoffGeo.lat, lng: dropoffGeo.lng }
+    if (pickupGeo) {
+      pickupCoords = { lat: pickupGeo.lat, lng: pickupGeo.lng }
+      convo = { ...convo, pickupLat: pickupGeo.lat, pickupLng: pickupGeo.lng }
+    }
+    if (dropoffGeo) {
+      dropoffCoords = { lat: dropoffGeo.lat, lng: dropoffGeo.lng }
+      convo = { ...convo, dropoffLat: dropoffGeo.lat, dropoffLng: dropoffGeo.lng }
+    }
   }
 
-  const origin = pickupCoords ?? convo.pickupAddress!
-  const destination = dropoffCoords ?? convo.dropoffAddress!
+  if (!pickupCoords || !dropoffCoords) {
+    return (
+      `I couldn't resolve one of the addresses. Could you double-check?\n\n` +
+      `📍 Pickup: ${convo.pickupAddress ?? 'not set'}\n` +
+      `📍 Drop-off: ${convo.dropoffAddress ?? 'not set'}\n\n` +
+      `You can also share a 📍 location pin for a precise spot.`
+    )
+  }
 
-  const route = await getRoute(origin, destination)
-
+  const route = await getRoute(pickupCoords, dropoffCoords)
   if (!route) {
-    return `Sorry, I couldn't calculate the route right now. Could you confirm your addresses are correct?\n\n📍 Pickup: ${convo.pickupAddress}\n📍 Drop-off: ${convo.dropoffAddress}\n\nReply *yes* to retry or type a corrected address.`
+    return (
+      `Sorry, I couldn't calculate the route right now. Could you confirm your addresses?\n\n` +
+      `📍 Pickup: ${convo.pickupAddress}\n📍 Drop-off: ${convo.dropoffAddress}\n\n` +
+      `Reply *yes* to retry or type a corrected address.`
+    )
   }
 
-  const timeOfDay = getTimeOfDay()
   const fareResult = calculateFare({
     distanceKm: route.distanceKm,
     durationMin: route.durationMin,
     serviceType: convo.serviceType!,
-    timeOfDay,
+    timeOfDay: getTimeOfDay(),
     heavyTraffic: route.heavyTraffic,
     packageSize: convo.packageSize,
     fragile: convo.fragile,
   })
 
-  await upsertConversationState({
-    ...convo,
-    stage: 'awaiting_confirm',
-    paymentMethod,
-    fareResult,
-  })
+  const updated: Omit<ConversationState, 'updatedAt'> = { ...convo, stage: 'awaiting_confirm', fareResult }
+  await upsertConversationState(updated)
 
-  // Build confirmation summary
-  const summary = buildSummary({ ...convo, paymentMethod, fareResult })
   return (
-    `Here's your booking summary:\n\n${summary}\n\n` +
-    `${formatFareForCustomer(fareResult)}\n\n` +
-    `Reply *YES* to confirm or *NO* to cancel.`
+    buildProseSummary({ ...updated, updatedAt: '' }) +
+    `\n\nDoes that look right? Say *yes* to confirm or let me know what to change.`
   )
 }
 
-async function handleConfirm(
-  phone: string,
-  text: string,
-  convo: ConversationState
-): Promise<string> {
-  const lower = text.toLowerCase()
+/**
+ * Build the single prose confirmation message (PRT-67).
+ */
+function buildProseSummary(convo: ConversationState): string {
+  const type = convo.serviceType === 'ride' ? 'ride' : 'package delivery'
+  const pickup = convo.pickupAddress ?? 'unknown pickup'
+  const dropoff = convo.dropoffAddress ?? 'unknown drop-off'
 
-  if (lower === 'no' || lower === 'cancel') {
-    await resetConversation(phone)
-    return `Booking cancelled. No problem — message us anytime to start a new booking! 🙏`
+  let details = ''
+  if (convo.serviceType === 'ride') {
+    const pax = convo.passengerCount ?? 1
+    details = `${pax} ${pax === 1 ? 'passenger' : 'passengers'}`
+  } else {
+    const size = convo.packageSize ?? 'small'
+    const fragileLabel = convo.fragile ? ', fragile' : ''
+    const recipientLabel = convo.recipientName ? ` for *${convo.recipientName}*` : ''
+    details = `${size} package${fragileLabel}${recipientLabel}`
   }
 
-  if (lower !== 'yes' && lower !== 'confirm') {
-    return `Reply *YES* to confirm your booking or *NO* to cancel.`
-  }
+  const payment = convo.paymentMethod === 'cash' ? 'cash' : 'Interac e-Transfer'
+  const fareStr = convo.fareResult
+    ? ` — estimated *$${convo.fareResult.rangeL.toFixed(2)}–$${convo.fareResult.rangeH.toFixed(2)}* (HST included)`
+    : ''
 
-  // Create the booking
+  return (
+    `Here's what I've got: *${type}* from *${pickup}* to *${dropoff}*, ` +
+    `${details}, paying ${payment}${fareStr}.`
+  )
+}
+
+async function submitBooking(phone: string, convo: ConversationState): Promise<string> {
   const booking = await createBooking({
     customerPhone: phone,
     serviceType: convo.serviceType!,
@@ -455,8 +438,6 @@ async function handleConfirm(
     notes: convo.notes,
   })
 
-  // Mark conversation confirmed and notify dispatcher in parallel (PRT-32)
-  // These are independent after createBooking — no reason to await sequentially.
   await Promise.all([
     upsertConversationState({ ...convo, stage: 'confirmed' }),
     notifyDispatcher(booking.queueNumber),
@@ -469,12 +450,63 @@ async function handleConfirm(
   )
 }
 
-// ─── Dispatcher queue notification ───────────────────────────────────────────
+// ─── Stage computation ────────────────────────────────────────────────────────
 
-/**
- * Send the dispatcher the pending queue with the new booking highlighted.
- * Includes customer name and priority distance for the new booking.
- */
+function computeNextStage(
+  convo: Partial<Omit<ConversationState, 'updatedAt'>>
+): ConversationStage {
+  if (!convo.serviceType) return 'awaiting_service'
+  if (!convo.pickupAddress) return 'awaiting_pickup'
+  if (!convo.dropoffAddress) return 'awaiting_dropoff'
+
+  if (convo.serviceType === 'ride') {
+    if (!convo.passengerCount) return 'awaiting_pax'
+  } else {
+    if (!convo.packageSize) return 'awaiting_pkg_size'
+    if (convo.fragile === undefined) return 'awaiting_recipient'
+    if (!convo.recipientName) return 'awaiting_recipient'
+  }
+
+  if (!convo.paymentMethod) return 'awaiting_payment'
+  return 'awaiting_confirm'
+}
+
+function nextPromptForStage(
+  stage: ConversationStage,
+  convo: Partial<Omit<ConversationState, 'updatedAt'>>
+): string {
+  switch (stage) {
+    case 'awaiting_service':
+      return serviceMenuMessage()
+    case 'awaiting_pickup':
+      return convo.serviceType === 'ride'
+        ? `🚗 Great! What's the *pickup address*? Type an address or share your 📍 location.`
+        : `📦 Got it! What's the *pickup address* (where we're collecting from)? Type an address or share your 📍 location.`
+    case 'awaiting_dropoff':
+      return `📍 Pickup: *${convo.pickupAddress}*\n\nNow, what's the *drop-off address*? Type an address or share your 📍 location.`
+    case 'awaiting_pax':
+      return `📍 Drop-off: *${convo.dropoffAddress}*\n\nHow many *passengers*? (including yourself)`
+    case 'awaiting_pkg_size':
+      return (
+        `📍 Drop-off: *${convo.dropoffAddress}*\n\n` +
+        `What size is the package?\n\n` +
+        `1️⃣  *Small* — fits in a backpack\n` +
+        `2️⃣  *Large* — needs both hands`
+      )
+    case 'awaiting_recipient':
+      if (convo.fragile === undefined) {
+        return `Is the package fragile? _(We'll handle it with extra care, +$3.00)_`
+      }
+      return `What's the *recipient's name*? (Who should the driver ask for at drop-off?)`
+    case 'awaiting_payment':
+      return paymentPrompt()
+    default:
+      return `Got it! Anything else?`
+  }
+}
+
+// ─── Dispatcher notification ──────────────────────────────────────────────────
+
 async function notifyDispatcher(newQueueNumber: number): Promise<void> {
   const [pending, dispatcher] = await Promise.all([
     getPendingBookings(),
@@ -491,13 +523,8 @@ async function notifyDispatcher(newQueueNumber: number): Promise<void> {
       ? `${b.passengerCount ?? 1} pax`
       : `${b.packageSize ?? 'small'}${b.fragile ? ' · fragile' : ''}`
     const payment = b.paymentMethod === 'cash' ? 'cash' : 'e-transfer'
+    const customerLine = isNew && customer?.name ? `\n    👤 ${customer.name}` : ''
 
-    // Customer name line (new booking only)
-    const customerLine = isNew && customer?.name
-      ? `\n    👤 ${customer.name}`
-      : ''
-
-    // Priority distance from dispatcher's current location to pickup (new booking only)
     let priorityLine = ''
     if (isNew) {
       if (dispatcher?.currentLat && dispatcher?.currentLng && b.pickupLat && b.pickupLng) {
@@ -510,18 +537,16 @@ async function notifyDispatcher(newQueueNumber: number): Promise<void> {
 
     return (
       `${i + 1}️⃣  *#${b.queueNumber}* ${emoji} ${paxOrPkg}${isNew ? ' 🆕' : ''}` +
-      customerLine +
-      priorityLine +
+      customerLine + priorityLine +
       `\n    📍 ${b.pickupAddress}\n` +
       `       → ${b.dropoffAddress}\n` +
       `    💰 $${b.fare.toFixed(2)} · ${payment}`
     )
   })
 
-  const queueText = lines.join('\n\n')
   const msg =
     `🔔 New booking request!\n\n` +
-    `*Pending queue:*\n\n${queueText}\n\n` +
+    `*Pending queue:*\n\n${lines.join('\n\n')}\n\n` +
     `Reply *CONFIRM [#]* or *DECLINE [#]* — e.g. CONFIRM ${newQueueNumber}`
 
   await sendWhatsApp(`whatsapp:${DISPATCHER_PHONE}`, msg)
@@ -529,10 +554,6 @@ async function notifyDispatcher(newQueueNumber: number): Promise<void> {
 
 // ─── Haversine distance ───────────────────────────────────────────────────────
 
-/**
- * Straight-line distance between two lat/lng points in kilometres.
- * Used for dispatcher priority scoring (distance to pickup).
- */
 function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
   const R = 6371
   const toRad = (deg: number) => deg * Math.PI / 180
@@ -546,28 +567,21 @@ function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): nu
 
 // ─── Message templates ────────────────────────────────────────────────────────
 
-function greetingMessage(name?: string): string {
-  const greeting = name
-    ? `Welcome back, *${name}*! 👋`
-    : `Hi there! Welcome to *Pronto* 👋`
-  return `${greeting}\n\nWe offer fast, on-demand rides and package delivery across the GTA.\n\n${serviceMenuMessage()}`
-}
-
 function serviceMenuMessage(): string {
   return (
     `What can we help you with today?\n\n` +
-    `1️⃣  *Ride* (ASAP)\n` +
+    `1️⃣  *Ride* — get picked up ASAP\n` +
     `2️⃣  *Package delivery*\n\n` +
-    `Reply *1* or *2* to get started.`
+    `Just tell me what you need — no need to reply with a number!`
   )
 }
 
 function paymentPrompt(): string {
   return (
     `How would you like to pay?\n\n` +
-    `1️⃣  *Cash*\n` +
-    `2️⃣  *Interac e-Transfer*\n\n` +
-    `Reply *1* or *2*.`
+    `💵  *Cash* — pay the driver directly\n` +
+    `📲  *Interac e-Transfer*\n\n` +
+    `Just say "cash" or "e-transfer"!`
   )
 }
 
@@ -577,24 +591,6 @@ function offDutyMessage(): string {
     `We're not available right now, but we'll be back soon.\n\n` +
     `Feel free to message us again later — we'd love to help! 🚗`
   )
-}
-
-function buildSummary(convo: Partial<ConversationState>): string {
-  const lines: string[] = []
-  const type = convo.serviceType === 'ride' ? '🚗 Ride' : '📦 Package delivery'
-  lines.push(`*Service:* ${type}`)
-  lines.push(`*Pickup:* ${convo.pickupAddress}`)
-  lines.push(`*Drop-off:* ${convo.dropoffAddress}`)
-
-  if (convo.serviceType === 'ride') {
-    lines.push(`*Passengers:* ${convo.passengerCount ?? 1}`)
-  } else {
-    lines.push(`*Package:* ${convo.packageSize}${convo.fragile ? ' (fragile)' : ''}`)
-    if (convo.recipientName) lines.push(`*Recipient:* ${convo.recipientName}`)
-  }
-
-  lines.push(`*Payment:* ${convo.paymentMethod === 'cash' ? 'Cash' : 'Interac e-Transfer'}`)
-  return lines.join('\n')
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
