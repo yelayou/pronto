@@ -1,71 +1,61 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { validateTwilioSignature, sendWhatsApp } from '@/lib/twilio/client'
-import { handleDispatcherMessage } from '@/lib/dispatcher/handler'
-import { handleCustomerMessage } from '@/lib/customer/handler'
+import { validateTwilioSignature } from '@/lib/twilio/client'
+import { isQStashEnabled, enqueueWebhookJob } from '@/lib/qstash/client'
+import { processWebhookPayload } from '@/lib/webhook/processor'
 
 /**
  * POST /api/webhook
  *
  * Receives all inbound WhatsApp messages from Twilio.
- * Routes to either:
- *   - Dispatcher handler  (message from DISPATCHER_PHONE)
- *   - Customer handler    (any other number)
  *
- * PRT-16: ON DUTY / OFF DUTY dispatcher commands
- * PRT-17: Full dispatcher command set
- * PRT-18/19: Customer conversation handler (coming soon)
+ * Fast path (QSTASH_TOKEN set — staging/production):
+ *   1. Validate Twilio signature
+ *   2. Serialise form payload
+ *   3. Enqueue job to QStash → returns 200 in <200ms
+ *   4. Processing happens asynchronously in POST /api/worker
+ *
+ * Sync fallback (QSTASH_TOKEN not set — local dev):
+ *   1–2 same, then process inline before returning 200
+ *
+ * PRT-36: async webhook via QStash
+ * PRT-59: use request.url directly (avoids fragile host-header reconstruction)
  */
 export async function POST(request: NextRequest) {
-// ── Validate Twilio signature ──────────────────────────────────────────────
-const signature = request.headers.get('x-twilio-signature') ?? ''
+  // ── Validate Twilio signature ────────────────────────────────────────────────
+  const signature = request.headers.get('x-twilio-signature') ?? ''
 
-const host = request.headers.get('host')
-const protocol = 'https'
-const url = `${protocol}://${host}/api/webhook`
+  // Use request.url directly — reconstructing from host header is fragile (PRT-59)
+  const url = request.url
 
-const formData = await request.formData()
-const params: Record<string, string> = {}
-formData.forEach((value, key) => { params[key] = value.toString() })
+  const formData = await request.formData()
+  const params: Record<string, string> = {}
+  formData.forEach((value, key) => { params[key] = value.toString() })
 
-if (!validateTwilioSignature(signature, url, params)) {
-  console.warn('[webhook] Invalid Twilio signature — request rejected', {
-    url,
-    signature,
-  })
-  return new NextResponse('Forbidden', { status: 403 })
-}
-
-  // ── Parse payload ──────────────────────────────────────────────────────────
-  const from = params['From']
-  const body = params['Body'] ?? ''
-  // Location pin: Twilio sends Latitude/Longitude when customer shares a pin
-  const lat = params['Latitude'] ? parseFloat(params['Latitude']) : undefined
-  const lng = params['Longitude'] ? parseFloat(params['Longitude']) : undefined
-
-  // Require at least a sender; body may be empty for location pins
-  if (!from) {
-    return new NextResponse('Bad request', { status: 400 })
+  if (!validateTwilioSignature(signature, url, params)) {
+    console.warn('[webhook] Invalid Twilio signature — request rejected', { url })
+    return new NextResponse('Forbidden', { status: 403 })
   }
 
-  const dispatcherPhone = process.env.DISPATCHER_PHONE
-  const isDispatcher =
-    from === `whatsapp:${dispatcherPhone}` || from === dispatcherPhone
-
-  // ── Route message ──────────────────────────────────────────────────────────
-  try {
-    if (isDispatcher) {
-      const reply = await handleDispatcherMessage(body)
-      await sendWhatsApp(from, reply)
-    } else {
-      // PRT-18/19: Customer conversation handler
-      const reply = await handleCustomerMessage(from, body, lat, lng)
-      if (reply) {
-        await sendWhatsApp(from, reply)
-      }
+  // ── Enqueue or process synchronously ────────────────────────────────────────
+  if (isQStashEnabled()) {
+    // Async path: publish to QStash and return 200 immediately.
+    // Processing will happen in POST /api/worker once QStash delivers the job.
+    try {
+      await enqueueWebhookJob(params)
+    } catch (err) {
+      // Log but don't surface to Twilio — always return 200.
+      // If enqueue fails, the message is lost; alerting can be added later.
+      console.error('[webhook] Failed to enqueue job:', err)
     }
-  } catch (err) {
-    console.error('[webhook] Error handling message:', err)
-    // Don't surface errors to Twilio — always return 200
+  } else {
+    // Sync fallback for local dev (QSTASH_TOKEN not set).
+    // Mirrors the old inline behaviour — safe for low-latency calls but risks
+    // hitting Twilio's 15s timeout on slow Maps API responses in production.
+    try {
+      await processWebhookPayload(params)
+    } catch (err) {
+      console.error('[webhook] Error processing message:', err)
+    }
   }
 
   // Twilio expects a 200 with TwiML (even if empty)

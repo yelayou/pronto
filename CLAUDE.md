@@ -143,7 +143,10 @@ All shared types live in a single file. Key ones:
 ## API endpoints
 
 ### `POST /api/webhook`
-Main Twilio webhook. Receives all inbound WhatsApp messages. Routes by `From` to dispatcher or customer handler. Must respond with TwiML (even if empty) and HTTP 200 — Twilio will retry on any other status. Validate the `X-Twilio-Signature` header using `validateTwilioSignature()` from `src/lib/twilio/client.ts`.
+Main Twilio webhook. Validates the `X-Twilio-Signature` header then either enqueues the job to QStash (when `QSTASH_TOKEN` is set) or processes synchronously (local dev fallback). Always responds with empty TwiML and HTTP 200 in <200ms so Twilio never times out or retries.
+
+### `POST /api/worker`
+QStash job processor. Receives async jobs published by `/api/webhook`. Validates the `upstash-signature` header using `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`, then calls `processWebhookPayload()` which handles all dispatcher and customer routing. Shared processor lives in `src/lib/webhook/processor.ts`.
 
 ### `POST /api/fare`
 Accepts a `FareInput` JSON body, returns a `FareResult`. Used internally and useful for manual testing. Required fields: `distanceKm`, `durationMin`, `serviceType`, `timeOfDay`, `heavyTraffic`.
@@ -173,13 +176,22 @@ The client in `src/lib/supabase/client.ts` uses the **service role key** — it 
 ```
 TWILIO_ACCOUNT_SID
 TWILIO_AUTH_TOKEN
-TWILIO_WHATSAPP_NUMBER     # Your Twilio WhatsApp sender number
-DISPATCHER_PHONE           # E.164 phone of the human dispatcher
+TWILIO_WHATSAPP_NUMBER          # Your Twilio WhatsApp sender number
+DISPATCHER_PHONE                # E.164 phone of the human dispatcher
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 GOOGLE_MAPS_API_KEY
 ANTHROPIC_API_KEY
-STAGING_URL                # Used by E2E and smoke tests only
+STAGING_URL                     # Used by E2E and smoke tests only
+
+# QStash async processing (PRT-36)
+# When set, the webhook enqueues jobs to QStash instead of processing inline.
+# If QSTASH_TOKEN is not set, the webhook falls back to synchronous processing (safe for local dev).
+QSTASH_TOKEN                    # Upstash QStash publish token
+QSTASH_CURRENT_SIGNING_KEY      # Used by /api/worker to verify QStash delivery signatures
+QSTASH_NEXT_SIGNING_KEY         # Rotated signing key (QStash rotates keys periodically)
+APP_BASE_URL                    # Optional: base URL for the worker callback (e.g. https://pronto.example.com)
+                                # Defaults to https://$VERCEL_URL if not set
 ```
 
 Both Twilio and Supabase clients throw at module load time if their required vars are missing — this surfaces misconfiguration immediately on startup.
@@ -226,10 +238,7 @@ npx ngrok http 3000  # expose webhook to Twilio sandbox
 
 ## In progress / TODO
 
-The webhook handler (`src/app/api/webhook/route.ts`) currently stubs out routing. The dispatcher and customer handlers are tracked as:
-- `SCRUM-16` — Dispatcher command handler
-- `SCRUM-17` — Dispatcher state management  
-- `SCRUM-18` — Customer conversation handler
-- `SCRUM-19` — Customer booking flow
+Sprint 1 is active. All core customer and dispatcher handlers are implemented. Remaining work:
 
-The `src/lib/maps/` directory is referenced in types but not yet implemented (geocoding + distance matrix wrappers for Google Maps).
+- `PRT-36` — Async webhook via QStash ✅ implemented, pending deploy + QStash setup in Upstash dashboard
+- `PRT-33` — Conversation TTL (reset stale conversations after N hours of inactivity)
