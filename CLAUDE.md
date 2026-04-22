@@ -236,9 +236,36 @@ npx ngrok http 3000  # expose webhook to Twilio sandbox
 
 ---
 
+## Development workflow — Jira tickets required
+
+**Before writing any code or making any meaningful change, a Jira ticket must exist.**
+
+Use the PRT project at `yelayou.atlassian.net`. Choose the right type:
+
+| Scope | Ticket type |
+|---|---|
+| Single focused change (new function, small fix, isolated feature) | **Story** |
+| Defect / regression in existing behaviour | **Bug** |
+| Cross-cutting feature spanning multiple stories | **Epic** |
+| Small piece of work under an existing story | **Subtask** |
+
+If you're unsure whether something is a Story or an Epic, default to Story — it can always be promoted later.
+
+**Workflow:**
+1. Create the ticket (or confirm an existing one covers the work)
+2. Reference the ticket key (e.g. `PRT-42`) in commit messages and PR descriptions
+3. Update ticket status as work progresses (In Progress → In Review → Done)
+4. Close the ticket once the change is deployed and smoke tests pass
+
+This applies to everything: new features, refactors, dependency upgrades, config changes, and bug fixes. The only exception is one-line typo fixes in comments or docs.
+
+---
+
 ## In progress / TODO
 
 Sprint 1 is active. All core customer and dispatcher handlers are implemented. Remaining work:
 
 - `PRT-36` — Async webhook via QStash ✅ implemented, pending deploy + QStash setup in Upstash dashboard
-- `PRT-33` — Conversation TTL (reset stale conversations after N hours of inactivity)
+- `PRT-33` — Idempotency check on booking creation using Twilio MessageSid (prevent duplicate bookings on retries)
+- `PRT-34` — Conversation TTL (expire stale conversations after 2 hours of inactivity)
+- `PRT-61` — Conversational AI customer experience: NLU intent extraction, smart greetings (name + seasonal/holiday), location disambiguation (Pearson T1/T3, Union Station, Billy Bishop), natural language confirmation with fare estimate
