@@ -22,5 +22,12 @@ jobs:
             echo "Branch names must follow the convention:"
             echo "  feature/<description>   e.g. feature/dispatcher-handler"
             echo "  fix/<description>       e.g. fix/fare-rounding"
+            echo "  hotfix/<description>    e.g. hotfix/payment-crash"
+            echo "  ci/<description>        e.g. ci/manual-preview-workflow"
+            echo "  chore/<description>     e.g. chore/bump-dependencies"
+            echo "  release/<version>       e.g. release/1.2.0"
+            echo "  docs/<description>      e.g. docs/api-reference"
+            echo "  refactor/<description>  e.g. refactor/fare-calculator"
+            echo "  test/<description>      e.g. test/webhook-integration"
             exit 1
           fi
