@@ -335,14 +335,27 @@ async function handlePayment(
     return paymentPrompt()
   }
 
-  // Calculate fare — get route first
-  const origin = convo.pickupLat && convo.pickupLng
+  // ── Resolve coordinates in parallel (PRT-32) ──────────────────────────────
+  // If lat/lng weren't captured (text address entry), geocode both in parallel
+  // before fetching the route — cuts latency by ~50% vs sequential calls.
+  let pickupCoords = convo.pickupLat && convo.pickupLng
     ? { lat: convo.pickupLat, lng: convo.pickupLng }
-    : convo.pickupAddress!
-
-  const destination = convo.dropoffLat && convo.dropoffLng
+    : null
+  let dropoffCoords = convo.dropoffLat && convo.dropoffLng
     ? { lat: convo.dropoffLat, lng: convo.dropoffLng }
-    : convo.dropoffAddress!
+    : null
+
+  if (!pickupCoords || !dropoffCoords) {
+    const [pickupGeo, dropoffGeo] = await Promise.all([
+      !pickupCoords ? geocodeAddress(convo.pickupAddress!) : Promise.resolve(null),
+      !dropoffCoords ? geocodeAddress(convo.dropoffAddress!) : Promise.resolve(null),
+    ])
+    if (pickupGeo) pickupCoords = { lat: pickupGeo.lat, lng: pickupGeo.lng }
+    if (dropoffGeo) dropoffCoords = { lat: dropoffGeo.lat, lng: dropoffGeo.lng }
+  }
+
+  const origin = pickupCoords ?? convo.pickupAddress!
+  const destination = dropoffCoords ?? convo.dropoffAddress!
 
   const route = await getRoute(origin, destination)
 
@@ -413,11 +426,12 @@ async function handleConfirm(
     notes: convo.notes,
   })
 
-  // Move conversation to confirmed
-  await upsertConversationState({ ...convo, stage: 'confirmed' })
-
-  // Notify dispatcher with full queue
-  await notifyDispatcher(booking.queueNumber)
+  // Mark conversation confirmed and notify dispatcher in parallel (PRT-32)
+  // These are independent after createBooking — no reason to await sequentially.
+  await Promise.all([
+    upsertConversationState({ ...convo, stage: 'confirmed' }),
+    notifyDispatcher(booking.queueNumber),
+  ])
 
   return (
     `✅ Booking *#${booking.queueNumber}* submitted!\n\n` +

@@ -35,7 +35,7 @@ export async function geocodeAddress(
   address: string
 ): Promise<GeocodeResult | null> {
   const url = new URL('https://maps.googleapis.com/maps/api/geocode/json')
-  url.searchParams.set('address', `${address}, Toronto, ON`)
+  url.searchParams.set('address', `${address}, Ontario, Canada`)
   url.searchParams.set('region', 'ca')
   url.searchParams.set('key', API_KEY!)
 
