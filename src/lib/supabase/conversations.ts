@@ -1,5 +1,5 @@
 import { supabase } from './client'
-import type { ConversationState, ConversationStage, ServiceType, PackageSize, PaymentMethod, FareResult } from '@/types'
+import type { ConversationState, ConversationStage, ServiceType, PackageSize, PaymentMethod, FareResult, PendingLandmark } from '@/types'
 
 const TABLE = 'conversation_state'
 
@@ -50,6 +50,7 @@ export async function upsertConversationState(
         notes: state.notes ?? null,
         payment_method: state.paymentMethod ?? null,
         fare_result: state.fareResult ?? null,
+        pending_landmark: state.pendingLandmark ?? null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'customer_phone' }
@@ -100,6 +101,7 @@ export async function resetConversation(phone: string): Promise<void> {
         notes: null,
         payment_method: null,
         fare_result: null,
+        pending_landmark: null,
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'customer_phone' }
@@ -128,6 +130,7 @@ function rowToState(row: Record<string, unknown>): ConversationState {
     notes: row.notes != null ? (row.notes as string) : undefined,
     paymentMethod: row.payment_method != null ? (row.payment_method as PaymentMethod) : undefined,
     fareResult: row.fare_result != null ? (row.fare_result as FareResult) : undefined,
+    pendingLandmark: row.pending_landmark != null ? (row.pending_landmark as PendingLandmark) : undefined,
     updatedAt: row.updated_at as string,
   }
 }

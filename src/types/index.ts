@@ -112,12 +112,24 @@ export type ConversationStage =
   | 'awaiting_service'
   | 'awaiting_pickup'
   | 'awaiting_dropoff'
+  | 'awaiting_landmark'   // customer named an ambiguous landmark — waiting for sub-location choice
   | 'awaiting_pax'
   | 'awaiting_pkg_size'
   | 'awaiting_recipient'
   | 'awaiting_payment'
   | 'awaiting_confirm'
   | 'confirmed'
+
+/**
+ * Stored while the customer is choosing a sub-location for an ambiguous landmark
+ * (e.g. "Pearson" → which terminal?). Cleared once resolved or if they share a pin.
+ */
+export interface PendingLandmark {
+  /** Which booking field is being disambiguated */
+  field: 'pickup' | 'dropoff'
+  /** Matches a key in the LANDMARKS map — e.g. 'pearson' | 'union_station' | 'billy_bishop' */
+  landmarkId: string
+}
 
 export interface ConversationState {
   customerPhone: string
@@ -136,6 +148,8 @@ export interface ConversationState {
   notes?: string
   paymentMethod?: PaymentMethod
   fareResult?: FareResult
+  /** Set while waiting for the customer to pick a landmark sub-location. Stored as JSONB in Supabase. */
+  pendingLandmark?: PendingLandmark
   updatedAt: string
 }
 
