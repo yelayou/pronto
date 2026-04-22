@@ -1,4 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
+import type { Tool, ToolUseBlock } from '@anthropic-ai/sdk/resources/beta/tools/messages'
 import { ConversationState, ServiceType, PackageSize, PaymentMethod } from '@/types'
 
 // ─── Intent extraction result types ────────────────────────────────────────────
@@ -28,7 +29,7 @@ export interface IntentResult {
 
 // ─── Tool schema for Claude tool_use ──────────────────────────────────────────
 
-const EXTRACTION_TOOL: Anthropic.Tool = {
+const EXTRACTION_TOOL: Tool = {
   name: 'extract_booking_fields',
   description:
     'Extract structured booking fields from customer WhatsApp message for Pronto ride/delivery service',
@@ -245,8 +246,8 @@ export async function extractIntent(
       }
     }
 
-    // Call Claude with tool_use to extract fields
-    const response = await client.messages.create({
+    // Call Claude with tool_use to extract fields (tool use is in beta in SDK 0.21)
+    const response = await client.beta.tools.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       tools: [EXTRACTION_TOOL],
@@ -272,11 +273,12 @@ Extract only the fields that are present or clearly stated in the message. Prese
       ]
     })
 
-    // Extract tool use block
+    // Extract tool use block — response.content is ToolsBetaContentBlock[] (TextBlock | ToolUseBlock)
     let extractedFields: Record<string, unknown> = {}
     for (const block of response.content) {
-      if (block.type === 'tool_use' && block.name === 'extract_booking_fields') {
-        extractedFields = block.input as Record<string, unknown>
+      const toolBlock = block as ToolUseBlock
+      if (toolBlock.type === 'tool_use' && toolBlock.name === 'extract_booking_fields') {
+        extractedFields = toolBlock.input as Record<string, unknown>
         break
       }
     }
