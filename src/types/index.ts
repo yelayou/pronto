@@ -108,6 +108,7 @@ export interface IncidentRecord {
 
 export type ConversationStage =
   | 'idle'
+  | 'awaiting_name'       // first-time customers only — collect name before service menu
   | 'awaiting_service'
   | 'awaiting_pickup'
   | 'awaiting_dropoff'

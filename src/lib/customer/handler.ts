@@ -14,7 +14,7 @@
  */
 
 import { getDispatcherState } from '@/lib/supabase/dispatcher'
-import { getCustomer, upsertCustomer } from '@/lib/supabase/customers'
+import { getCustomer, upsertCustomer, updateCustomerName } from '@/lib/supabase/customers'
 import {
   getConversationState,
   upsertConversationState,
@@ -62,15 +62,21 @@ export async function handleCustomerMessage(
   let convo = await getConversationState(phone)
 
   if (!convo || convo.stage === 'idle') {
-    convo = await upsertConversationState({
-      customerPhone: phone,
-      stage: 'awaiting_service',
-    })
+    if (!customer.name) {
+      // First-time customer — collect name before showing the service menu
+      await upsertConversationState({ customerPhone: phone, stage: 'awaiting_name' })
+      return `Hi! Welcome to *Pronto* 👋\n\nBefore we get started, what's your name?`
+    }
+    // Returning customer with a known name
+    await upsertConversationState({ customerPhone: phone, stage: 'awaiting_service' })
     return greetingMessage(customer.name)
   }
 
   // ── 4. Route to stage handler ──────────────────────────────────────────────
   switch (convo.stage) {
+    case 'awaiting_name':
+      return handleNameCollection(phone, text, convo)
+
     case 'awaiting_service':
       return handleServiceSelection(phone, text, convo)
 
@@ -106,6 +112,29 @@ export async function handleCustomerMessage(
 }
 
 // ─── Stage handlers ───────────────────────────────────────────────────────────
+
+async function handleNameCollection(
+  phone: string,
+  text: string,
+  convo: ConversationState
+): Promise<string> {
+  const name = text.trim()
+  if (!name || name.length < 2) {
+    return `Sorry, I didn't catch that! What's your name?`
+  }
+
+  // Save name and advance to service selection in parallel
+  await Promise.all([
+    updateCustomerName(phone, name),
+    upsertConversationState({ ...convo, stage: 'awaiting_service' }),
+  ])
+
+  return (
+    `Nice to meet you, *${name}*! 🙌\n\n` +
+    `We offer fast, on-demand rides and package delivery across the GTA.\n\n` +
+    serviceMenuMessage()
+  )
+}
 
 async function handleServiceSelection(
   phone: string,
@@ -335,14 +364,27 @@ async function handlePayment(
     return paymentPrompt()
   }
 
-  // Calculate fare — get route first
-  const origin = convo.pickupLat && convo.pickupLng
+  // ── Resolve coordinates in parallel (PRT-32) ──────────────────────────────
+  // If lat/lng weren't captured (text address entry), geocode both in parallel
+  // before fetching the route — cuts latency by ~50% vs sequential calls.
+  let pickupCoords = convo.pickupLat && convo.pickupLng
     ? { lat: convo.pickupLat, lng: convo.pickupLng }
-    : convo.pickupAddress!
-
-  const destination = convo.dropoffLat && convo.dropoffLng
+    : null
+  let dropoffCoords = convo.dropoffLat && convo.dropoffLng
     ? { lat: convo.dropoffLat, lng: convo.dropoffLng }
-    : convo.dropoffAddress!
+    : null
+
+  if (!pickupCoords || !dropoffCoords) {
+    const [pickupGeo, dropoffGeo] = await Promise.all([
+      !pickupCoords ? geocodeAddress(convo.pickupAddress!) : Promise.resolve(null),
+      !dropoffCoords ? geocodeAddress(convo.dropoffAddress!) : Promise.resolve(null),
+    ])
+    if (pickupGeo) pickupCoords = { lat: pickupGeo.lat, lng: pickupGeo.lng }
+    if (dropoffGeo) dropoffCoords = { lat: dropoffGeo.lat, lng: dropoffGeo.lng }
+  }
+
+  const origin = pickupCoords ?? convo.pickupAddress!
+  const destination = dropoffCoords ?? convo.dropoffAddress!
 
   const route = await getRoute(origin, destination)
 
@@ -413,11 +455,12 @@ async function handleConfirm(
     notes: convo.notes,
   })
 
-  // Move conversation to confirmed
-  await upsertConversationState({ ...convo, stage: 'confirmed' })
-
-  // Notify dispatcher with full queue
-  await notifyDispatcher(booking.queueNumber)
+  // Mark conversation confirmed and notify dispatcher in parallel (PRT-32)
+  // These are independent after createBooking — no reason to await sequentially.
+  await Promise.all([
+    upsertConversationState({ ...convo, stage: 'confirmed' }),
+    notifyDispatcher(booking.queueNumber),
+  ])
 
   return (
     `✅ Booking *#${booking.queueNumber}* submitted!\n\n` +
@@ -430,21 +473,46 @@ async function handleConfirm(
 
 /**
  * Send the dispatcher the pending queue with the new booking highlighted.
+ * Includes customer name and priority distance for the new booking.
  */
 async function notifyDispatcher(newQueueNumber: number): Promise<void> {
-  const pending = await getPendingBookings()
+  const [pending, dispatcher] = await Promise.all([
+    getPendingBookings(),
+    getDispatcherState(),
+  ])
+
+  const newBooking = pending.find(b => b.queueNumber === newQueueNumber)
+  const customer = newBooking ? await getCustomer(newBooking.customerPhone) : null
 
   const lines = pending.map((b, i) => {
-    const isNew = b.queueNumber === newQueueNumber ? ' 🆕' : ''
+    const isNew = b.queueNumber === newQueueNumber
     const emoji = b.serviceType === 'ride' ? '🚗' : '📦'
     const paxOrPkg = b.serviceType === 'ride'
       ? `${b.passengerCount ?? 1} pax`
       : `${b.packageSize ?? 'small'}${b.fragile ? ' · fragile' : ''}`
     const payment = b.paymentMethod === 'cash' ? 'cash' : 'e-transfer'
 
+    // Customer name line (new booking only)
+    const customerLine = isNew && customer?.name
+      ? `\n    👤 ${customer.name}`
+      : ''
+
+    // Priority distance from dispatcher's current location to pickup (new booking only)
+    let priorityLine = ''
+    if (isNew) {
+      if (dispatcher?.currentLat && dispatcher?.currentLng && b.pickupLat && b.pickupLng) {
+        const km = haversineKm(dispatcher.currentLat, dispatcher.currentLng, b.pickupLat, b.pickupLng)
+        priorityLine = `\n    📏 ~${km.toFixed(1)} km from you`
+      } else if (dispatcher?.currentZone) {
+        priorityLine = `\n    🗺️ Zone: ${dispatcher.currentZone}`
+      }
+    }
+
     return (
-      `${i + 1}️⃣  *#${b.queueNumber}* ${emoji} ${paxOrPkg}${isNew}\n` +
-      `    📍 ${b.pickupAddress}\n` +
+      `${i + 1}️⃣  *#${b.queueNumber}* ${emoji} ${paxOrPkg}${isNew ? ' 🆕' : ''}` +
+      customerLine +
+      priorityLine +
+      `\n    📍 ${b.pickupAddress}\n` +
       `       → ${b.dropoffAddress}\n` +
       `    💰 $${b.fare.toFixed(2)} · ${payment}`
     )
@@ -457,6 +525,23 @@ async function notifyDispatcher(newQueueNumber: number): Promise<void> {
     `Reply *CONFIRM [#]* or *DECLINE [#]* — e.g. CONFIRM ${newQueueNumber}`
 
   await sendWhatsApp(`whatsapp:${DISPATCHER_PHONE}`, msg)
+}
+
+// ─── Haversine distance ───────────────────────────────────────────────────────
+
+/**
+ * Straight-line distance between two lat/lng points in kilometres.
+ * Used for dispatcher priority scoring (distance to pickup).
+ */
+function haversineKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371
+  const toRad = (deg: number) => deg * Math.PI / 180
+  const dLat = toRad(lat2 - lat1)
+  const dLng = toRad(lng2 - lng1)
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a))
 }
 
 // ─── Message templates ────────────────────────────────────────────────────────
