@@ -143,10 +143,7 @@ All shared types live in a single file. Key ones:
 ## API endpoints
 
 ### `POST /api/webhook`
-Main Twilio webhook. Validates the `X-Twilio-Signature` header then either enqueues the job to QStash (when `QSTASH_TOKEN` is set) or processes synchronously (local dev fallback). Always responds with empty TwiML and HTTP 200 in <200ms so Twilio never times out or retries.
-
-### `POST /api/worker`
-QStash job processor. Receives async jobs published by `/api/webhook`. Validates the `upstash-signature` header using `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`, then calls `processWebhookPayload()` which handles all dispatcher and customer routing. Shared processor lives in `src/lib/webhook/processor.ts`.
+Main Twilio webhook. Receives all inbound WhatsApp messages. Routes by `From` to dispatcher or customer handler. Must respond with TwiML (even if empty) and HTTP 200 — Twilio will retry on any other status. Validate the `X-Twilio-Signature` header using `validateTwilioSignature()` from `src/lib/twilio/client.ts`.
 
 ### `POST /api/fare`
 Accepts a `FareInput` JSON body, returns a `FareResult`. Used internally and useful for manual testing. Required fields: `distanceKm`, `durationMin`, `serviceType`, `timeOfDay`, `heavyTraffic`.
@@ -176,22 +173,13 @@ The client in `src/lib/supabase/client.ts` uses the **service role key** — it 
 ```
 TWILIO_ACCOUNT_SID
 TWILIO_AUTH_TOKEN
-TWILIO_WHATSAPP_NUMBER          # Your Twilio WhatsApp sender number
-DISPATCHER_PHONE                # E.164 phone of the human dispatcher
+TWILIO_WHATSAPP_NUMBER     # Your Twilio WhatsApp sender number
+DISPATCHER_PHONE           # E.164 phone of the human dispatcher
 SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 GOOGLE_MAPS_API_KEY
 ANTHROPIC_API_KEY
-STAGING_URL                     # Used by E2E and smoke tests only
-
-# QStash async processing (PRT-36)
-# When set, the webhook enqueues jobs to QStash instead of processing inline.
-# If QSTASH_TOKEN is not set, the webhook falls back to synchronous processing (safe for local dev).
-QSTASH_TOKEN                    # Upstash QStash publish token
-QSTASH_CURRENT_SIGNING_KEY      # Used by /api/worker to verify QStash delivery signatures
-QSTASH_NEXT_SIGNING_KEY         # Rotated signing key (QStash rotates keys periodically)
-APP_BASE_URL                    # Optional: base URL for the worker callback (e.g. https://pronto.example.com)
-                                # Defaults to https://$VERCEL_URL if not set
+STAGING_URL                # Used by E2E and smoke tests only
 ```
 
 Both Twilio and Supabase clients throw at module load time if their required vars are missing — this surfaces misconfiguration immediately on startup.
@@ -236,36 +224,12 @@ npx ngrok http 3000  # expose webhook to Twilio sandbox
 
 ---
 
-## Development workflow — Jira tickets required
-
-**Before writing any code or making any meaningful change, a Jira ticket must exist.**
-
-Use the PRT project at `yelayou.atlassian.net`. Choose the right type:
-
-| Scope | Ticket type |
-|---|---|
-| Single focused change (new function, small fix, isolated feature) | **Story** |
-| Defect / regression in existing behaviour | **Bug** |
-| Cross-cutting feature spanning multiple stories | **Epic** |
-| Small piece of work under an existing story | **Subtask** |
-
-If you're unsure whether something is a Story or an Epic, default to Story — it can always be promoted later.
-
-**Workflow:**
-1. Create the ticket (or confirm an existing one covers the work)
-2. Reference the ticket key (e.g. `PRT-42`) in commit messages and PR descriptions
-3. Update ticket status as work progresses (In Progress → In Review → Done)
-4. Close the ticket once the change is deployed and smoke tests pass
-
-This applies to everything: new features, refactors, dependency upgrades, config changes, and bug fixes. The only exception is one-line typo fixes in comments or docs.
-
----
-
 ## In progress / TODO
 
-Sprint 1 is active. All core customer and dispatcher handlers are implemented. Remaining work:
+The webhook handler (`src/app/api/webhook/route.ts`) currently stubs out routing. The dispatcher and customer handlers are tracked as:
+- `SCRUM-16` — Dispatcher command handler
+- `SCRUM-17` — Dispatcher state management  
+- `SCRUM-18` — Customer conversation handler
+- `SCRUM-19` — Customer booking flow
 
-- `PRT-36` — Async webhook via QStash ✅ implemented, pending deploy + QStash setup in Upstash dashboard
-- `PRT-33` — Idempotency check on booking creation using Twilio MessageSid (prevent duplicate bookings on retries)
-- `PRT-34` — Conversation TTL (expire stale conversations after 2 hours of inactivity)
-- `PRT-61` — Conversational AI customer experience: NLU intent extraction, smart greetings (name + seasonal/holiday), location disambiguation (Pearson T1/T3, Union Station, Billy Bishop), natural language confirmation with fare estimate
+The `src/lib/maps/` directory is referenced in types but not yet implemented (geocoding + distance matrix wrappers for Google Maps).
