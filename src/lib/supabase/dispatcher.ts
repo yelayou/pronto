@@ -29,16 +29,17 @@ export async function getDispatcherState(): Promise<DispatcherState | null> {
 
 /**
  * Set dispatcher ON DUTY with a zone name.
+ * Uses upsert so the row is created if the migration seed hasn't run yet.
  */
 export async function setOnDuty(zone: string): Promise<DispatcherState> {
   const { data, error } = await supabase
     .from(TABLE)
-    .update({
+    .upsert({
+      id: ROW_ID,
       duty_status: 'on',
       current_zone: zone,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', ROW_ID)
     .select()
     .single()
 
@@ -48,18 +49,19 @@ export async function setOnDuty(zone: string): Promise<DispatcherState> {
 
 /**
  * Set dispatcher OFF DUTY — clears zone and location.
+ * Uses upsert so the row is created if the migration seed hasn't run yet.
  */
 export async function setOffDuty(): Promise<DispatcherState> {
   const { data, error } = await supabase
     .from(TABLE)
-    .update({
+    .upsert({
+      id: ROW_ID,
       duty_status: 'off',
       current_zone: null,
       current_lat: null,
       current_lng: null,
       updated_at: new Date().toISOString(),
     })
-    .eq('id', ROW_ID)
     .select()
     .single()
 
