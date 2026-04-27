@@ -122,17 +122,26 @@ const REQUIRED_FIELDS: Record<ServiceType, (keyof Omit<ConversationState, 'custo
 }
 
 // ─── Helper: detect landmark in address ───────────────────────────────────────
+// Uses longest-match so "island airport" beats "airport", "billy bishop airport"
+// beats "airport", etc.
 
 function detectLandmark(address: string): { landmarkId: string } | null {
   if (!address) return null
 
   const normalized = address.toLowerCase()
+  let bestMatch: { landmarkId: string } | null = null
+  let bestKeywordLength = 0
+
   for (const { keywords, landmarkId } of Object.values(LANDMARK_PATTERNS)) {
-    if (keywords.some((kw) => normalized.includes(kw))) {
-      return { landmarkId }
+    for (const kw of keywords) {
+      if (normalized.includes(kw) && kw.length > bestKeywordLength) {
+        bestMatch = { landmarkId }
+        bestKeywordLength = kw.length
+      }
     }
   }
-  return null
+
+  return bestMatch
 }
 
 // ─── Helper: detect confirmation intent ───────────────────────────────────────

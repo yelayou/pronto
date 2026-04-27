@@ -84,27 +84,36 @@ export const LANDMARKS: Record<string, Landmark> = {
 
 /**
  * Returns the matching landmark if the text contains any trigger keyword, else null.
- * For 'union', only matches if it's a standalone word or part of 'union station'.
+ * Uses longest-match to prefer specific triggers (e.g. "island airport" → Billy Bishop)
+ * over shorter ones (e.g. "airport" → Pearson) when both could match.
+ * For 'union', only matches if it appears as a standalone word (word-boundary check).
  */
 export function findLandmark(text: string): Landmark | null {
   const lowerText = text.toLowerCase();
 
+  let bestMatch: Landmark | null = null;
+  let bestTriggerLength = 0;
+
   for (const landmark of Object.values(LANDMARKS)) {
     for (const trigger of landmark.triggers) {
+      let matched = false;
+
       if (trigger === 'union') {
-        // Special handling for 'union' to avoid matching 'union ave' etc.
-        // Match if it appears as a standalone word or part of 'union station'
-        const wordBoundary = /\bunion\b/;
-        if (wordBoundary.test(lowerText)) {
-          return landmark;
-        }
-      } else if (lowerText.includes(trigger)) {
-        return landmark;
+        // Special handling: match only as a whole word to avoid false positives on
+        // unrelated streets. "union station", "union", "at union" all qualify.
+        matched = /\bunion\b/.test(lowerText);
+      } else {
+        matched = lowerText.includes(trigger);
+      }
+
+      if (matched && trigger.length > bestTriggerLength) {
+        bestMatch = landmark;
+        bestTriggerLength = trigger.length;
       }
     }
   }
 
-  return null;
+  return bestMatch;
 }
 
 /**
