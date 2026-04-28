@@ -266,18 +266,19 @@ export async function extractIntent(
           content: `Extract booking information from this Pronto customer message (GTA ride/delivery service).
 
 Current conversation state:
+- Current stage: ${convo.stage}
 - Service type: ${convo.serviceType || 'not yet selected'}
 - Pickup: ${convo.pickupAddress || 'not yet provided'}
 - Dropoff: ${convo.dropoffAddress || 'not yet provided'}
-- Passengers: ${convo.passengerCount || 'N/A'}
-- Package size: ${convo.packageSize || 'N/A'}
-- Recipient: ${convo.recipientName || 'N/A'}
+- Passengers: ${convo.passengerCount ?? 'not yet provided'}
+- Package size: ${convo.packageSize || 'not yet provided'}
+- Recipient: ${convo.recipientName || 'not yet provided'}
 - Payment: ${convo.paymentMethod || 'not yet selected'}
 - Customer name: ${customerName || 'unknown'}
 
 Message: "${message}"
 
-Extract only the fields that are present or clearly stated in the message. Preserve existing conversation state for fields not mentioned. Detect ambiguous landmarks in addresses.`
+The "Current stage" field tells you what the bot is currently waiting for — use it to interpret short replies like "1", "cash", "yes" in context. Extract only the fields that are present or clearly stated in the message. Preserve existing conversation state for fields not mentioned. Detect ambiguous landmarks in addresses.`
         }
       ]
     })
