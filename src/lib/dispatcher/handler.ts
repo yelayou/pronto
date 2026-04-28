@@ -19,6 +19,32 @@ import { resetConversation } from '@/lib/supabase/conversations'
 
 const NOSHOW_FEE = 5.00
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
+import type { BookingRecord } from '@/types'
+
+/**
+ * Format a list of pending bookings as a numbered WhatsApp-friendly queue summary.
+ */
+function formatPendingQueue(bookings: BookingRecord[]): string {
+  return bookings
+    .map((b, i) => {
+      const emoji = b.serviceType === 'ride' ? '🚗' : '📦'
+      const detail =
+        b.serviceType === 'ride'
+          ? `${b.passengerCount ?? 1} pax`
+          : `${b.packageSize ?? 'small'}${b.fragile ? ' · fragile' : ''}`
+      const payment = b.paymentMethod === 'cash' ? 'cash' : 'e-transfer'
+      return (
+        `${i + 1}️⃣  *#${b.queueNumber}* ${emoji} ${detail}\n` +
+        `    📍 ${b.pickupAddress}\n` +
+        `       → ${b.dropoffAddress}\n` +
+        `    💰 $${b.fare.toFixed(2)} · ${payment}`
+      )
+    })
+    .join('\n\n')
+}
+
 /**
  * Handle an inbound message from the dispatcher.
  * @param body  Raw WhatsApp message text
@@ -32,8 +58,18 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
     // ── Duty status ────────────────────────────────────────────────────────────
 
     case 'ON_DUTY': {
-      await setOnDuty(command.zone)
-      return `✅ You're ON DUTY in *${command.zone}*. Bot is active — customers can now book.`
+      const [, pending] = await Promise.all([
+        setOnDuty(command.zone),
+        getPendingBookings(),
+      ])
+      const base = `✅ You're ON DUTY in *${command.zone}*. Bot is active — customers can now book.`
+      if (pending.length === 0) return base
+      return (
+        `${base}\n\n` +
+        `⚠️ *${pending.length} booking(s) were waiting while you were off:*\n\n` +
+        formatPendingQueue(pending) +
+        `\n\nReply *CONFIRM [#]* or *DECLINE [#]* to action them.`
+      )
     }
 
     case 'OFF_DUTY': {
@@ -142,10 +178,22 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
       return `⚠️ NOSHOW logged for booking *${booking.id.slice(0, 8)}*. $${NOSHOW_FEE.toFixed(2)} fee notice sent to customer.`
     }
 
+    // ── Queue ─────────────────────────────────────────────────────────────────
+
+    case 'QUEUE': {
+      const pending = await getPendingBookings()
+      if (pending.length === 0) return `📋 No pending bookings.`
+      return (
+        `📋 *${pending.length} pending booking(s):*\n\n` +
+        formatPendingQueue(pending) +
+        `\n\nReply *CONFIRM [#]* or *DECLINE [#]* to action them.`
+      )
+    }
+
     // ── Fallback ───────────────────────────────────────────────────────────────
 
     case 'UNKNOWN':
     default:
-      return `❓ Unrecognised command: "${command.raw}"\n\nValid commands:\nON DUTY [zone]\nOFF DUTY\nCONFIRM [#]\nDECLINE [#]\nARRIVED\nCOMPLETE\nNOSHOW`
+      return `❓ Unrecognised command: "${command.raw}"\n\nValid commands:\nON DUTY [zone]\nOFF DUTY\nCONFIRM [#]\nDECLINE [#]\nARRIVED\nCOMPLETE\nNOSHOW\nQUEUE`
   }
 }

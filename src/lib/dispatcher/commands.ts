@@ -15,6 +15,7 @@ export type DispatcherCommand =
   | { type: 'ARRIVED' }
   | { type: 'COMPLETE' }
   | { type: 'NOSHOW' }
+  | { type: 'QUEUE' }
   | { type: 'UNKNOWN'; raw: string }
 
 /**
@@ -49,6 +50,7 @@ export function parseDispatcherCommand(body: string): DispatcherCommand {
   if (/^arrived$/i.test(text)) return { type: 'ARRIVED' }
   if (/^complete$/i.test(text)) return { type: 'COMPLETE' }
   if (/^noshow$/i.test(text)) return { type: 'NOSHOW' }
+  if (/^queue$/i.test(text)) return { type: 'QUEUE' }
 
   return { type: 'UNKNOWN', raw: text }
 }
