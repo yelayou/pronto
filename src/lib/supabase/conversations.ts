@@ -3,6 +3,26 @@ import type { ConversationState, ConversationStage, ServiceType, PackageSize, Pa
 
 const TABLE = 'conversation_state'
 
+/** TTL in hours — configurable via CONVERSATION_TTL_HOURS, default 2 */
+function getTtlHours(): number {
+  const raw = process.env.CONVERSATION_TTL_HOURS
+  const parsed = raw ? parseInt(raw, 10) : NaN
+  return isNaN(parsed) || parsed <= 0 ? 2 : parsed
+}
+
+function nextExpiresAt(): string {
+  return new Date(Date.now() + getTtlHours() * 60 * 60 * 1000).toISOString()
+}
+
+/**
+ * Returns true if the conversation has expired and should be reset.
+ * A missing expiresAt is treated as valid (legacy rows before PRT-34).
+ */
+export function isConversationExpired(state: ConversationState): boolean {
+  if (!state.expiresAt) return false
+  return new Date(state.expiresAt) < new Date()
+}
+
 // ─── Read ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -51,6 +71,7 @@ export async function upsertConversationState(
         payment_method: state.paymentMethod ?? null,
         fare_result: state.fareResult ?? null,
         pending_landmark: state.pendingLandmark ?? null,
+        expires_at: nextExpiresAt(),
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'customer_phone' }
@@ -102,6 +123,7 @@ export async function resetConversation(phone: string): Promise<void> {
         payment_method: null,
         fare_result: null,
         pending_landmark: null,
+        expires_at: nextExpiresAt(),
         updated_at: new Date().toISOString(),
       },
       { onConflict: 'customer_phone' }
@@ -131,6 +153,7 @@ function rowToState(row: Record<string, unknown>): ConversationState {
     paymentMethod: row.payment_method != null ? (row.payment_method as PaymentMethod) : undefined,
     fareResult: row.fare_result != null ? (row.fare_result as FareResult) : undefined,
     pendingLandmark: row.pending_landmark != null ? (row.pending_landmark as PendingLandmark) : undefined,
+    expiresAt: row.expires_at != null ? (row.expires_at as string) : undefined,
     updatedAt: row.updated_at as string,
   }
 }
