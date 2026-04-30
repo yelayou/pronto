@@ -11,7 +11,6 @@ Migrations are plain SQL files, numbered by timestamp. Run them in order against
 | `20260415000000_repeat_offender_flag.sql` | is_repeat_offender() helper function |
 | `20260422000000_conversation_pending_landmark.sql` | pending_landmark column on conversation_state (PRT-65) |
 | `20260430000000_processed_messages.sql` | processed_messages table for webhook idempotency, 24h TTL (PRT-33) |
-| `20260430000001_conversation_ttl.sql` | expires_at column on conversation_state for TTL reset (PRT-34) |
 
 ## Applying to a new environment
 

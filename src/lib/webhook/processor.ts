@@ -12,6 +12,7 @@
 import { handleDispatcherMessage } from '@/lib/dispatcher/handler'
 import { handleCustomerMessage } from '@/lib/customer/handler'
 import { sendWhatsApp } from '@/lib/twilio/client'
+import { deduplicateMessage } from '@/lib/supabase/idempotency'
 
 /**
  * Process a single inbound WhatsApp message.
@@ -23,6 +24,7 @@ export async function processWebhookPayload(
 ): Promise<void> {
   const from = params['From']
   const body = params['Body'] ?? ''
+  const messageSid = params['MessageSid']
   const lat = params['Latitude'] ? parseFloat(params['Latitude']) : undefined
   const lng = params['Longitude'] ? parseFloat(params['Longitude']) : undefined
 
@@ -35,6 +37,14 @@ export async function processWebhookPayload(
   const dispatcherPhone = process.env.DISPATCHER_PHONE
   const isDispatcher =
     from === `whatsapp:${dispatcherPhone}` || from === dispatcherPhone
+
+  // Deduplicate customer messages using Twilio MessageSid (PRT-33).
+  // Dispatcher commands are short, idempotent by nature, and not at risk of
+  // creating duplicate bookings — no dedup needed on that path.
+  if (!isDispatcher && messageSid) {
+    const isDuplicate = await deduplicateMessage(messageSid)
+    if (isDuplicate) return
+  }
 
   if (isDispatcher) {
     const reply = await handleDispatcherMessage(body)
