@@ -9,6 +9,8 @@ Migrations are plain SQL files, numbered by timestamp. Run them in order against
 | `20260401000000_initial_schema.sql` | dispatcher_state, bookings, incidents, queue sequence, RLS |
 | `20260408000000_customers_and_conversations.sql` | customers, conversation_state, increment_booking_count() |
 | `20260415000000_repeat_offender_flag.sql` | is_repeat_offender() helper function |
+| `20260422000000_conversation_pending_landmark.sql` | pending_landmark column on conversation_state (PRT-65) |
+| `20260430000000_processed_messages.sql` | processed_messages table for webhook idempotency, 24h TTL (PRT-33) |
 
 ## Applying to a new environment
 
