@@ -150,6 +150,8 @@ export interface ConversationState {
   fareResult?: FareResult
   /** Set while waiting for the customer to pick a landmark sub-location. Stored as JSONB in Supabase. */
   pendingLandmark?: PendingLandmark
+  /** Conversation auto-resets if a message arrives after this timestamp (PRT-34). */
+  expiresAt?: string
   updatedAt: string
 }
 

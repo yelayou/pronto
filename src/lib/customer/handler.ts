@@ -25,6 +25,7 @@ import {
   getConversationState,
   upsertConversationState,
   resetConversation,
+  isConversationExpired,
 } from '@/lib/supabase/conversations'
 import { createBooking, getPendingBookings } from '@/lib/supabase/bookings'
 import { geocodeAddress, reverseGeocode, getRoute } from '@/lib/maps/client'
@@ -72,7 +73,16 @@ export async function handleCustomerMessage(
   const customer = await upsertCustomer(phone)
 
   // ── 3. Conversation state ──────────────────────────────────────────────────
-  const convo = await getConversationState(phone)
+  let convo = await getConversationState(phone)
+
+  // ── 3a. TTL expiry check (PRT-34) ─────────────────────────────────────────
+  // If the conversation has been idle past its TTL, reset it so the customer
+  // gets a fresh start rather than being dropped into a stale booking flow.
+  if (convo && isConversationExpired(convo)) {
+    console.info(`[handler] Conversation expired for ${phone} — resetting`)
+    await resetConversation(phone)
+    convo = null
+  }
 
   // ── 4. Fresh / idle start ─────────────────────────────────────────────────
   if (!convo || convo.stage === 'idle') {
