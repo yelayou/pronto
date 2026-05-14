@@ -6,6 +6,7 @@
  */
 
 import { parseDispatcherCommand } from './commands'
+import { ETRANSFER_LINK } from '@/lib/config'
 import { setOnDuty, setOffDuty } from '@/lib/supabase/dispatcher'
 import {
   getBookingByQueueNumber,
@@ -137,7 +138,7 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
 
       const paymentMsg = booking.paymentMethod === 'cash'
         ? `Your driver has arrived! Please pay *$${booking.fare.toFixed(2)}* (HST included) in *cash* 💵`
-        : `Your driver has arrived! Please send *$${booking.fare.toFixed(2)}* (HST included) via *Interac e-Transfer* to:\n${process.env.ETRANSFER_LINK ?? 'your dispatcher'} 💸`
+        : `Your driver has arrived! Please send *$${booking.fare.toFixed(2)}* (HST included) via *Interac e-Transfer* to:\n${ETRANSFER_LINK} 💸`
 
       await sendWhatsApp(booking.customerPhone, paymentMsg)
 
