@@ -1,5 +1,7 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Tool, ToolUseBlock } from '@anthropic-ai/sdk/resources/beta/tools/messages'
+
+const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 import { ConversationState, ServiceType, PackageSize, PaymentMethod } from '@/types'
 
 // ─── Intent extraction result types ────────────────────────────────────────────
@@ -241,22 +243,18 @@ export async function extractIntent(
   convo: ConversationState,
   customerName?: string
 ): Promise<IntentResult> {
-  try {
-    const client = new Anthropic({
-      apiKey: process.env.ANTHROPIC_API_KEY
-    })
-
-    // Check for quick confirmation intent first
-    const quickConfirm = detectConfirmationIntent(message)
-    if (quickConfirm) {
-      return {
-        confirmationIntent: quickConfirm,
-        nextPrompt: computeNextPrompt(convo, customerName)
-      }
+  // Quick confirmation check — short-circuits before any API call
+  const quickConfirm = detectConfirmationIntent(message)
+  if (quickConfirm) {
+    return {
+      confirmationIntent: quickConfirm,
+      nextPrompt: computeNextPrompt(convo, customerName)
     }
+  }
 
+  try {
     // Call Claude with tool_use to extract fields (tool use is in beta in SDK 0.21)
-    const response = await client.beta.tools.messages.create({
+    const response = await anthropic.beta.tools.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       tools: [EXTRACTION_TOOL],
