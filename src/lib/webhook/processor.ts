@@ -13,7 +13,6 @@ import { handleDispatcherMessage } from '@/lib/dispatcher/handler'
 import { handleCustomerMessage } from '@/lib/customer/handler'
 import { sendWhatsApp } from '@/lib/twilio/client'
 import { deduplicateMessage } from '@/lib/supabase/idempotency'
-import { sanitizeInput } from '@/lib/sanitize'
 
 /**
  * Process a single inbound WhatsApp message.
@@ -24,7 +23,7 @@ export async function processWebhookPayload(
   params: Record<string, string>
 ): Promise<void> {
   const from = params['From']
-  const body = sanitizeInput(params['Body'])
+  const body = params['Body'] ?? ''
   const messageSid = params['MessageSid']
   const lat = params['Latitude'] ? parseFloat(params['Latitude']) : undefined
   const lng = params['Longitude'] ? parseFloat(params['Longitude']) : undefined
