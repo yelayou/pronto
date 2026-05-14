@@ -16,15 +16,17 @@ import type { ConversationState } from '@/types'
 const mockCreate = vi.hoisted(() => vi.fn())
 
 vi.mock('@anthropic-ai/sdk', () => ({
-  default: vi.fn().mockImplementation(() => ({
-    beta: {
-      tools: {
-        messages: {
-          create: mockCreate,
+  default: vi.fn(function () {
+    return {
+      beta: {
+        tools: {
+          messages: {
+            create: mockCreate,
+          },
         },
       },
-    },
-  })),
+    }
+  }),
 }))
 
 import { extractIntent } from '@/lib/customer/intent'
