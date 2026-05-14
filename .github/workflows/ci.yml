@@ -73,7 +73,7 @@ jobs:
         run: npm run build
         env:
           NODE_ENV: production
-          TWILIO_ACCOUNT_SID: placeholder
+          TWILIO_ACCOUNT_SID: ACaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
           TWILIO_AUTH_TOKEN: placeholder
           TWILIO_WHATSAPP_NUMBER: placeholder
           SUPABASE_URL: https://placeholder.supabase.co
