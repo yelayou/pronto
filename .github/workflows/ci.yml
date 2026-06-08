@@ -81,3 +81,4 @@ jobs:
           ANTHROPIC_API_KEY: placeholder
           GOOGLE_MAPS_API_KEY: placeholder
           DISPATCHER_PHONE: "+10000000000"
+          ETRANSFER_LINK: placeholder
