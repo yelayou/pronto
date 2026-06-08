@@ -13,6 +13,7 @@ import { handleDispatcherMessage } from '@/lib/dispatcher/handler'
 import { handleCustomerMessage } from '@/lib/customer/handler'
 import { sendWhatsApp } from '@/lib/twilio/client'
 import { deduplicateMessage } from '@/lib/supabase/idempotency'
+import { checkRateLimit } from '@/lib/ratelimit'
 
 /**
  * Process a single inbound WhatsApp message.
@@ -37,6 +38,18 @@ export async function processWebhookPayload(
   const dispatcherPhone = process.env.DISPATCHER_PHONE
   const isDispatcher =
     from === `whatsapp:${dispatcherPhone}` || from === dispatcherPhone
+
+  // Rate-limit customer messages (PRT-42). Dispatcher is exempt.
+  if (!isDispatcher) {
+    const { limited, shouldNotify } = await checkRateLimit(from)
+    if (limited) {
+      if (shouldNotify) {
+        await sendWhatsApp(from, 'Please slow down — send one message at a time 🙏')
+      }
+      console.info(`[processor] Rate limit hit for ${from.slice(-4)}`)
+      return
+    }
+  }
 
   // Deduplicate customer messages using Twilio MessageSid (PRT-33).
   // Dispatcher commands are short, idempotent by nature, and not at risk of
