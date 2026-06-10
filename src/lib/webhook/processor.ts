@@ -14,6 +14,7 @@ import { handleCustomerMessage } from '@/lib/customer/handler'
 import { sendWhatsApp } from '@/lib/twilio/client'
 import { deduplicateMessage } from '@/lib/supabase/idempotency'
 import { checkRateLimit } from '@/lib/ratelimit'
+import { TwilioWebhookSchema, sanitizePhone } from '@/lib/validation/schemas'
 
 /**
  * Process a single inbound WhatsApp message.
@@ -23,17 +24,18 @@ import { checkRateLimit } from '@/lib/ratelimit'
 export async function processWebhookPayload(
   params: Record<string, string>
 ): Promise<void> {
-  const from = params['From']
-  const body = params['Body'] ?? ''
-  const messageSid = params['MessageSid']
-  const lat = params['Latitude'] ? parseFloat(params['Latitude']) : undefined
-  const lng = params['Longitude'] ? parseFloat(params['Longitude']) : undefined
-
-  // Require at least a sender; body may be empty for location pins
-  if (!from) {
-    console.warn('[processor] Missing From field — skipping')
+  const parsed = TwilioWebhookSchema.safeParse(params)
+  if (!parsed.success) {
+    console.warn('[processor] Invalid webhook payload — skipping', {
+      issues: parsed.error.issues.map(i => i.message),
+      from: sanitizePhone(params['From'] ?? ''),
+    })
     return
   }
+
+  const { From: from, Body: body, MessageSid: messageSid, Latitude, Longitude } = parsed.data
+  const lat = Latitude ? parseFloat(Latitude) : undefined
+  const lng = Longitude ? parseFloat(Longitude) : undefined
 
   const dispatcherPhone = process.env.DISPATCHER_PHONE
   const isDispatcher =
