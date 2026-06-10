@@ -1,32 +1,25 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { calculateFare } from '@/lib/fare/calculator'
-import type { FareInput } from '@/types'
+import { FareInputSchema } from '@/lib/validation/schemas'
 
 export async function POST(request: NextRequest) {
-  let body: FareInput
+  let raw: unknown
 
   try {
-    body = await request.json()
+    raw = await request.json()
   } catch {
     return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 })
   }
 
-  const { distanceKm, durationMin, serviceType, timeOfDay, heavyTraffic } = body
-
-  if (
-    typeof distanceKm !== 'number' ||
-    typeof durationMin !== 'number' ||
-    !serviceType ||
-    !timeOfDay ||
-    typeof heavyTraffic !== 'boolean'
-  ) {
+  const parsed = FareInputSchema.safeParse(raw)
+  if (!parsed.success) {
+    console.warn('[fare] Invalid request payload', parsed.error.issues)
     return NextResponse.json(
-      { error: 'Missing required fields: distanceKm, durationMin, serviceType, timeOfDay, heavyTraffic' },
+      { error: 'Invalid input', issues: parsed.error.issues },
       { status: 400 }
     )
   }
 
-  const result = calculateFare(body)
-
+  const result = calculateFare(parsed.data)
   return NextResponse.json(result, { status: 200 })
 }

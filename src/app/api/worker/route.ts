@@ -32,7 +32,7 @@ export async function POST(request: NextRequest) {
 
   // ── Process the job ──────────────────────────────────────────────────────────
   try {
-    const params = JSON.parse(rawBody) as Record<string, string>
+    const params = JSON.parse(rawBody)
     await processWebhookPayload(params)
   } catch (err) {
     // Log but return 200 — we don't want QStash to retry malformed payloads
