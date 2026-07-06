@@ -14,6 +14,7 @@ import {
   getPendingBookings,
   updateBookingStatus,
   logIncident,
+  markAllUnnotifiedAsNotified,
 } from '@/lib/supabase/bookings'
 import { sendWhatsApp } from '@/lib/twilio/client'
 import { resetConversation } from '@/lib/supabase/conversations'
@@ -63,6 +64,7 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
         setOnDuty(command.zone),
         getPendingBookings(),
       ])
+      await markAllUnnotifiedAsNotified()
       const base = `✅ You're ON DUTY in *${command.zone}*. Bot is active — customers can now book.`
       if (pending.length === 0) return base
       return (
@@ -183,6 +185,7 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
 
     case 'QUEUE': {
       const pending = await getPendingBookings()
+      await markAllUnnotifiedAsNotified()
       if (pending.length === 0) return `📋 No pending bookings.`
       return (
         `📋 *${pending.length} pending booking(s):*\n\n` +
