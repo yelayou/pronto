@@ -10,6 +10,7 @@
  */
 
 import type { LatLng, RouteResult } from '@/types'
+import { withRetry } from '@/lib/retry'
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY
 
@@ -39,7 +40,7 @@ export async function geocodeAddress(
   url.searchParams.set('region', 'ca')
   url.searchParams.set('key', API_KEY!)
 
-  const res = await fetch(url.toString())
+  const res = await withRetry(() => fetch(url.toString()))
   const json = await res.json() as GoogleGeocodeResponse
 
   if (json.status !== 'OK' || json.results.length === 0) {
@@ -70,7 +71,7 @@ export async function reverseGeocode(
   url.searchParams.set('result_type', 'street_address|route')
   url.searchParams.set('key', API_KEY!)
 
-  const res = await fetch(url.toString())
+  const res = await withRetry(() => fetch(url.toString()))
   const json = await res.json() as GoogleGeocodeResponse
 
   if (json.status !== 'OK' || json.results.length === 0) {
@@ -110,7 +111,7 @@ export async function getRoute(
   url.searchParams.set('traffic_model', 'best_guess')
   url.searchParams.set('key', API_KEY!)
 
-  const res = await fetch(url.toString())
+  const res = await withRetry(() => fetch(url.toString()))
   const json = await res.json() as GoogleDistanceMatrixResponse
 
   if (json.status !== 'OK') {
