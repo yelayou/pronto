@@ -1,4 +1,5 @@
 import twilio from 'twilio'
+import { withRetry } from '@/lib/retry'
 
 const accountSid = process.env.TWILIO_ACCOUNT_SID
 const authToken = process.env.TWILIO_AUTH_TOKEN
@@ -23,11 +24,9 @@ export async function sendWhatsApp(to: string, body: string): Promise<void> {
     ? fromNumber!
     : `whatsapp:${fromNumber}`
 
-  await twilioClient.messages.create({
-    from: fromFormatted,
-    to: toFormatted,
-    body,
-  })
+  await withRetry(() =>
+    twilioClient.messages.create({ from: fromFormatted, to: toFormatted, body })
+  )
 }
 
 /**
