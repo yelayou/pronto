@@ -20,7 +20,7 @@
  */
 
 import { getDispatcherState } from '@/lib/supabase/dispatcher'
-import { getCustomer, upsertCustomer, updateCustomerName } from '@/lib/supabase/customers'
+import { getCustomer, upsertCustomer, updateCustomerName, isRepeatOffender } from '@/lib/supabase/customers'
 import {
   getConversationState,
   upsertConversationState,
@@ -541,7 +541,12 @@ async function notifyDispatcher(newQueueNumber: number): Promise<void> {
   ])
 
   const newBooking = pending.find(b => b.queueNumber === newQueueNumber)
-  const customer = newBooking ? await getCustomer(newBooking.customerPhone) : null
+  const [customer, repeatOffender] = newBooking
+    ? await Promise.all([
+        getCustomer(newBooking.customerPhone),
+        isRepeatOffender(newBooking.customerPhone),
+      ])
+    : [null, false]
 
   const lines = pending.map((b, i) => {
     const isNew = b.queueNumber === newQueueNumber
@@ -550,7 +555,8 @@ async function notifyDispatcher(newQueueNumber: number): Promise<void> {
       ? `${b.passengerCount ?? 1} pax`
       : `${b.packageSize ?? 'small'}${b.fragile ? ' · fragile' : ''}`
     const payment = b.paymentMethod === 'cash' ? 'cash' : 'e-transfer'
-    const customerLine = isNew && customer?.name ? `\n    👤 ${customer.name}` : ''
+    const repeatFlag = isNew && repeatOffender ? ' ⚠️ repeat offender' : ''
+    const customerLine = isNew && customer?.name ? `\n    👤 ${customer.name}${repeatFlag}` : ''
 
     let priorityLine = ''
     if (isNew) {
