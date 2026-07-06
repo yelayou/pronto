@@ -70,6 +70,23 @@ export async function incrementBookingCount(phone: string): Promise<void> {
   if (error) throw new Error(`Failed to increment booking count for ${phone}: ${error.message}`)
 }
 
+/**
+ * Increment the incident count for a customer (called on NOSHOW).
+ */
+export async function incrementIncidentCount(phone: string): Promise<void> {
+  const { error } = await supabase.rpc('increment_incident_count', { customer_phone: phone })
+  if (error) throw new Error(`Failed to increment incident count for ${phone}: ${error.message}`)
+}
+
+/**
+ * Returns true if the customer has 2+ incidents in the last 30 days.
+ */
+export async function isRepeatOffender(phone: string): Promise<boolean> {
+  const { data, error } = await supabase.rpc('is_repeat_offender', { p_customer_phone: phone })
+  if (error) throw new Error(`Failed to check repeat offender for ${phone}: ${error.message}`)
+  return data as boolean
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function rowToCustomer(row: Record<string, unknown>): CustomerRecord {

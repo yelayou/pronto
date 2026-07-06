@@ -7,6 +7,8 @@ const BASE_DELAY_MS = 200
 
 function defaultIsRetryable(err: unknown): boolean {
   if (err instanceof TypeError) return true // network / connection errors
+  // AbortError from AbortSignal.timeout — transient, worth retrying
+  if (err instanceof DOMException && err.name === 'TimeoutError') return true
   if (err != null && typeof err === 'object' && 'status' in err) {
     return (err as { status: number }).status >= 500
   }

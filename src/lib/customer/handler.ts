@@ -20,14 +20,14 @@
  */
 
 import { getDispatcherState } from '@/lib/supabase/dispatcher'
-import { getCustomer, upsertCustomer, updateCustomerName } from '@/lib/supabase/customers'
+import { getCustomer, upsertCustomer, updateCustomerName, isRepeatOffender } from '@/lib/supabase/customers'
 import {
   getConversationState,
   upsertConversationState,
   resetConversation,
   isConversationExpired,
 } from '@/lib/supabase/conversations'
-import { createBooking, getPendingBookings } from '@/lib/supabase/bookings'
+import { createBooking, getPendingBookings, markDispatcherNotified } from '@/lib/supabase/bookings'
 import { geocodeAddress, reverseGeocode, getRoute } from '@/lib/maps/client'
 import { validateGTALocation } from '@/lib/geofence/gta'
 import { calculateFare, formatFareForCustomer } from '@/lib/fare/calculator'
@@ -347,10 +347,15 @@ async function buildAndShowConfirmation(
     convo.dropoffLat && convo.dropoffLng ? { lat: convo.dropoffLat, lng: convo.dropoffLng } : null
 
   if (!pickupCoords || !dropoffCoords) {
-    const [pickupGeo, dropoffGeo] = await Promise.all([
-      !pickupCoords && convo.pickupAddress ? geocodeAddress(convo.pickupAddress) : Promise.resolve(null),
-      !dropoffCoords && convo.dropoffAddress ? geocodeAddress(convo.dropoffAddress) : Promise.resolve(null),
-    ])
+    let pickupGeo = null, dropoffGeo = null
+    try {
+      ;[pickupGeo, dropoffGeo] = await Promise.all([
+        !pickupCoords && convo.pickupAddress ? geocodeAddress(convo.pickupAddress) : Promise.resolve(null),
+        !dropoffCoords && convo.dropoffAddress ? geocodeAddress(convo.dropoffAddress) : Promise.resolve(null),
+      ])
+    } catch (err) {
+      console.error('[maps] Geocoding failed — treating as unresolved', err)
+    }
     if (pickupGeo) {
       pickupCoords = { lat: pickupGeo.lat, lng: pickupGeo.lng }
       convo = { ...convo, pickupLat: pickupGeo.lat, pickupLng: pickupGeo.lng }
@@ -370,7 +375,12 @@ async function buildAndShowConfirmation(
     )
   }
 
-  const route = await getRoute(pickupCoords, dropoffCoords)
+  let route = null
+  try {
+    route = await getRoute(pickupCoords, dropoffCoords)
+  } catch (err) {
+    console.error('[maps] getRoute failed — returning null route', err)
+  }
   if (!route) {
     return (
       `Sorry, I couldn't calculate the route right now. Could you confirm your addresses?\n\n` +
@@ -448,10 +458,17 @@ async function submitBooking(phone: string, convo: ConversationState): Promise<s
     notes: convo.notes,
   })
 
-  await Promise.all([
-    upsertConversationState({ ...convo, stage: 'confirmed' }),
-    notifyDispatcher(booking.queueNumber),
-  ])
+  await upsertConversationState({ ...convo, stage: 'confirmed' })
+
+  try {
+    await notifyDispatcher(booking.queueNumber)
+    await markDispatcherNotified(booking.id)
+  } catch (err) {
+    console.error('[booking] Failed to notify dispatcher — booking needs manual recovery', {
+      bookingId: booking.id,
+      queueNumber: booking.queueNumber,
+    }, err)
+  }
 
   return (
     `✅ Booking *#${booking.queueNumber}* submitted!\n\n` +
@@ -524,7 +541,12 @@ async function notifyDispatcher(newQueueNumber: number): Promise<void> {
   ])
 
   const newBooking = pending.find(b => b.queueNumber === newQueueNumber)
-  const customer = newBooking ? await getCustomer(newBooking.customerPhone) : null
+  const [customer, repeatOffender] = newBooking
+    ? await Promise.all([
+        getCustomer(newBooking.customerPhone),
+        isRepeatOffender(newBooking.customerPhone),
+      ])
+    : [null, false]
 
   const lines = pending.map((b, i) => {
     const isNew = b.queueNumber === newQueueNumber
@@ -533,7 +555,8 @@ async function notifyDispatcher(newQueueNumber: number): Promise<void> {
       ? `${b.passengerCount ?? 1} pax`
       : `${b.packageSize ?? 'small'}${b.fragile ? ' · fragile' : ''}`
     const payment = b.paymentMethod === 'cash' ? 'cash' : 'e-transfer'
-    const customerLine = isNew && customer?.name ? `\n    👤 ${customer.name}` : ''
+    const repeatFlag = isNew && repeatOffender ? ' ⚠️ repeat offender' : ''
+    const customerLine = isNew && customer?.name ? `\n    👤 ${customer.name}${repeatFlag}` : ''
 
     let priorityLine = ''
     if (isNew) {
