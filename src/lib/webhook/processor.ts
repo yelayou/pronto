@@ -15,6 +15,7 @@ import { sendWhatsApp } from '@/lib/twilio/client'
 import { deduplicateMessage } from '@/lib/supabase/idempotency'
 import { checkRateLimit } from '@/lib/ratelimit'
 import { TwilioWebhookSchema, sanitizePhone } from '@/lib/validation/schemas'
+import { ConversationVersionError } from '@/lib/supabase/conversations'
 
 /**
  * Process a single inbound WhatsApp message.
@@ -65,9 +66,20 @@ export async function processWebhookPayload(
     const reply = await handleDispatcherMessage(body)
     await sendWhatsApp(from, reply)
   } else {
-    const reply = await handleCustomerMessage(from, body, lat, lng)
-    if (reply) {
-      await sendWhatsApp(from, reply)
+    try {
+      const reply = await handleCustomerMessage(from, body, lat, lng)
+      if (reply) {
+        await sendWhatsApp(from, reply)
+      }
+    } catch (err) {
+      if (err instanceof ConversationVersionError) {
+        console.warn('[processor] Concurrent write detected — dropping duplicate message', {
+          phone: sanitizePhone(from),
+          error: err.message,
+        })
+        return
+      }
+      throw err
     }
   }
 }

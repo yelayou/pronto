@@ -23,6 +23,17 @@ export function isConversationExpired(state: ConversationState): boolean {
   return new Date(state.expiresAt) < new Date()
 }
 
+/**
+ * Thrown when a versioned write finds the DB version has already advanced —
+ * meaning a concurrent write beat this one. Callers should drop the update.
+ */
+export class ConversationVersionError extends Error {
+  constructor(phone: string) {
+    super(`Conversation version conflict for ${phone} — concurrent write detected`)
+    this.name = 'ConversationVersionError'
+  }
+}
+
 // ─── Read ─────────────────────────────────────────────────────────────────────
 
 /**
@@ -45,37 +56,36 @@ export async function getConversationState(
 // ─── Write ────────────────────────────────────────────────────────────────────
 
 /**
- * Upsert (create or replace) the full conversation state for a customer.
+ * Persist a conversation state update.
+ *
+ * When `state.version` is set (existing conversation), uses an optimistic-lock
+ * UPDATE that only succeeds if the DB version matches. On mismatch (concurrent
+ * write), throws ConversationVersionError — callers should drop the update.
+ *
+ * When `state.version` is undefined (new conversation), upserts with version=1.
  */
 export async function upsertConversationState(
   state: Omit<ConversationState, 'updatedAt'>
 ): Promise<ConversationState> {
+  const fields = stateToRow(state)
+
+  if (state.version !== undefined) {
+    const { data, error } = await supabase
+      .from(TABLE)
+      .update({ ...fields, version: state.version + 1 })
+      .eq('customer_phone', state.customerPhone)
+      .eq('version', state.version)
+      .select()
+
+    if (error) throw new Error(`Failed to update conversation for ${state.customerPhone}: ${error.message}`)
+    if (!data || data.length === 0) throw new ConversationVersionError(state.customerPhone)
+    return rowToState(data[0])
+  }
+
+  // New conversation — upsert with version=1
   const { data, error } = await supabase
     .from(TABLE)
-    .upsert(
-      {
-        customer_phone: state.customerPhone,
-        stage: state.stage,
-        service_type: state.serviceType ?? null,
-        pickup_address: state.pickupAddress ?? null,
-        pickup_lat: state.pickupLat ?? null,
-        pickup_lng: state.pickupLng ?? null,
-        dropoff_address: state.dropoffAddress ?? null,
-        dropoff_lat: state.dropoffLat ?? null,
-        dropoff_lng: state.dropoffLng ?? null,
-        passenger_count: state.passengerCount ?? null,
-        package_size: state.packageSize ?? null,
-        fragile: state.fragile ?? null,
-        recipient_name: state.recipientName ?? null,
-        notes: state.notes ?? null,
-        payment_method: state.paymentMethod ?? null,
-        fare_result: state.fareResult ?? null,
-        pending_landmark: state.pendingLandmark ?? null,
-        expires_at: nextExpiresAt(),
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'customer_phone' }
-    )
+    .upsert({ ...fields, version: 1 }, { onConflict: 'customer_phone' })
     .select()
     .single()
 
@@ -85,21 +95,27 @@ export async function upsertConversationState(
 
 /**
  * Advance just the stage of a conversation without touching other fields.
+ * Requires the current version to guard against concurrent writes.
  */
 export async function advanceStage(
   phone: string,
-  stage: ConversationStage
+  stage: ConversationStage,
+  currentVersion: number
 ): Promise<void> {
-  const { error } = await supabase
+  const { data, error } = await supabase
     .from(TABLE)
-    .update({ stage, updated_at: new Date().toISOString() })
+    .update({ stage, version: currentVersion + 1, updated_at: new Date().toISOString() })
     .eq('customer_phone', phone)
+    .eq('version', currentVersion)
+    .select('version')
 
   if (error) throw new Error(`Failed to advance stage for ${phone}: ${error.message}`)
+  if (!data || data.length === 0) throw new ConversationVersionError(phone)
 }
 
 /**
  * Reset a customer's conversation back to idle (e.g. after booking confirmed or timed out).
+ * Always succeeds regardless of version — resets are considered authoritative.
  */
 export async function resetConversation(phone: string): Promise<void> {
   const { error } = await supabase
@@ -125,6 +141,7 @@ export async function resetConversation(phone: string): Promise<void> {
         pending_landmark: null,
         expires_at: nextExpiresAt(),
         updated_at: new Date().toISOString(),
+        version: 1,
       },
       { onConflict: 'customer_phone' }
     )
@@ -133,6 +150,30 @@ export async function resetConversation(phone: string): Promise<void> {
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
+
+function stateToRow(state: Omit<ConversationState, 'updatedAt'>): Record<string, unknown> {
+  return {
+    customer_phone: state.customerPhone,
+    stage: state.stage,
+    service_type: state.serviceType ?? null,
+    pickup_address: state.pickupAddress ?? null,
+    pickup_lat: state.pickupLat ?? null,
+    pickup_lng: state.pickupLng ?? null,
+    dropoff_address: state.dropoffAddress ?? null,
+    dropoff_lat: state.dropoffLat ?? null,
+    dropoff_lng: state.dropoffLng ?? null,
+    passenger_count: state.passengerCount ?? null,
+    package_size: state.packageSize ?? null,
+    fragile: state.fragile ?? null,
+    recipient_name: state.recipientName ?? null,
+    notes: state.notes ?? null,
+    payment_method: state.paymentMethod ?? null,
+    fare_result: state.fareResult ?? null,
+    pending_landmark: state.pendingLandmark ?? null,
+    expires_at: nextExpiresAt(),
+    updated_at: new Date().toISOString(),
+  }
+}
 
 function rowToState(row: Record<string, unknown>): ConversationState {
   return {
@@ -155,5 +196,6 @@ function rowToState(row: Record<string, unknown>): ConversationState {
     pendingLandmark: row.pending_landmark != null ? (row.pending_landmark as PendingLandmark) : undefined,
     expiresAt: row.expires_at != null ? (row.expires_at as string) : undefined,
     updatedAt: row.updated_at as string,
+    version: row.version != null ? (row.version as number) : undefined,
   }
 }
