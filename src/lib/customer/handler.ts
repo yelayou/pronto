@@ -347,10 +347,15 @@ async function buildAndShowConfirmation(
     convo.dropoffLat && convo.dropoffLng ? { lat: convo.dropoffLat, lng: convo.dropoffLng } : null
 
   if (!pickupCoords || !dropoffCoords) {
-    const [pickupGeo, dropoffGeo] = await Promise.all([
-      !pickupCoords && convo.pickupAddress ? geocodeAddress(convo.pickupAddress) : Promise.resolve(null),
-      !dropoffCoords && convo.dropoffAddress ? geocodeAddress(convo.dropoffAddress) : Promise.resolve(null),
-    ])
+    let pickupGeo = null, dropoffGeo = null
+    try {
+      ;[pickupGeo, dropoffGeo] = await Promise.all([
+        !pickupCoords && convo.pickupAddress ? geocodeAddress(convo.pickupAddress) : Promise.resolve(null),
+        !dropoffCoords && convo.dropoffAddress ? geocodeAddress(convo.dropoffAddress) : Promise.resolve(null),
+      ])
+    } catch (err) {
+      console.error('[maps] Geocoding failed — treating as unresolved', err)
+    }
     if (pickupGeo) {
       pickupCoords = { lat: pickupGeo.lat, lng: pickupGeo.lng }
       convo = { ...convo, pickupLat: pickupGeo.lat, pickupLng: pickupGeo.lng }
@@ -370,7 +375,12 @@ async function buildAndShowConfirmation(
     )
   }
 
-  const route = await getRoute(pickupCoords, dropoffCoords)
+  let route = null
+  try {
+    route = await getRoute(pickupCoords, dropoffCoords)
+  } catch (err) {
+    console.error('[maps] getRoute failed — returning null route', err)
+  }
   if (!route) {
     return (
       `Sorry, I couldn't calculate the route right now. Could you confirm your addresses?\n\n` +

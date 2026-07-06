@@ -79,6 +79,16 @@ export async function processWebhookPayload(
         })
         return
       }
+      // Infrastructure failure (DB down, Maps unreachable, etc.) — notify customer
+      // so they aren't left waiting in silence, then re-throw for logging upstream.
+      console.error('[processor] Unhandled error processing customer message', {
+        phone: sanitizePhone(from),
+      }, err)
+      try {
+        await sendWhatsApp(from, "We're experiencing a brief outage — please try again in a few minutes 🙏")
+      } catch {
+        // If even the error reply fails, log and move on
+      }
       throw err
     }
   }
