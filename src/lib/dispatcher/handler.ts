@@ -16,6 +16,7 @@ import {
   logIncident,
   markAllUnnotifiedAsNotified,
 } from '@/lib/supabase/bookings'
+import { incrementIncidentCount } from '@/lib/supabase/customers'
 import { sendWhatsApp } from '@/lib/twilio/client'
 import { resetConversation } from '@/lib/supabase/conversations'
 
@@ -171,11 +172,12 @@ export async function handleDispatcherMessage(body: string): Promise<string> {
 
       await updateBookingStatus(booking.id, 'noshow')
       await logIncident(booking.customerPhone, booking.id, 'noshow', NOSHOW_FEE)
+      await incrementIncidentCount(booking.customerPhone)
       await resetConversation(booking.customerPhone)
 
       await sendWhatsApp(
         booking.customerPhone,
-        `We noticed you weren't at the pickup location. A *$${NOSHOW_FEE.toFixed(2)} no-show fee* has been applied to your account. If this was a mistake, reply to this message.`
+        `We noticed you weren't at the pickup location. A *$${NOSHOW_FEE.toFixed(2)} no-show fee* has been applied to your account.\n\nPlease settle via e-Transfer to: ${ETRANSFER_LINK}\n\nIf this was a mistake, reply to this message.`
       )
 
       return `⚠️ NOSHOW logged for booking *${booking.id.slice(0, 8)}*. $${NOSHOW_FEE.toFixed(2)} fee notice sent to customer.`
