@@ -69,6 +69,8 @@ export interface BookingRecord {
   notes?: string
   createdAt: string
   updatedAt: string
+  /** False if the initial dispatcher WhatsApp notification failed — needs recovery (PRT-45). */
+  dispatcherNotified: boolean
 }
 
 // ─── Customer types ───────────────────────────────────────────────────────────

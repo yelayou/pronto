@@ -27,7 +27,7 @@ import {
   resetConversation,
   isConversationExpired,
 } from '@/lib/supabase/conversations'
-import { createBooking, getPendingBookings } from '@/lib/supabase/bookings'
+import { createBooking, getPendingBookings, markDispatcherNotified } from '@/lib/supabase/bookings'
 import { geocodeAddress, reverseGeocode, getRoute } from '@/lib/maps/client'
 import { validateGTALocation } from '@/lib/geofence/gta'
 import { calculateFare, formatFareForCustomer } from '@/lib/fare/calculator'
@@ -448,10 +448,17 @@ async function submitBooking(phone: string, convo: ConversationState): Promise<s
     notes: convo.notes,
   })
 
-  await Promise.all([
-    upsertConversationState({ ...convo, stage: 'confirmed' }),
-    notifyDispatcher(booking.queueNumber),
-  ])
+  await upsertConversationState({ ...convo, stage: 'confirmed' })
+
+  try {
+    await notifyDispatcher(booking.queueNumber)
+    await markDispatcherNotified(booking.id)
+  } catch (err) {
+    console.error('[booking] Failed to notify dispatcher — booking needs manual recovery', {
+      bookingId: booking.id,
+      queueNumber: booking.queueNumber,
+    }, err)
+  }
 
   return (
     `✅ Booking *#${booking.queueNumber}* submitted!\n\n` +
