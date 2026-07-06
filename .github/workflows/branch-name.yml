@@ -8,6 +8,7 @@ jobs:
   branch-name:
     name: Validate branch naming convention
     runs-on: ubuntu-latest
+    if: github.actor != 'dependabot[bot]'
     steps:
       - name: Check branch name
         run: |
