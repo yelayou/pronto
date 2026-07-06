@@ -69,6 +69,8 @@ export interface BookingRecord {
   notes?: string
   createdAt: string
   updatedAt: string
+  /** False if the initial dispatcher WhatsApp notification failed — needs recovery (PRT-45). */
+  dispatcherNotified: boolean
 }
 
 // ─── Customer types ───────────────────────────────────────────────────────────
@@ -153,6 +155,8 @@ export interface ConversationState {
   /** Conversation auto-resets if a message arrives after this timestamp (PRT-34). */
   expiresAt?: string
   updatedAt: string
+  /** Optimistic lock counter — must match DB value on write or the update is dropped (PRT-46). */
+  version?: number
 }
 
 // ─── Twilio webhook payload ───────────────────────────────────────────────────

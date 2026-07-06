@@ -123,12 +123,40 @@ export async function createBooking(
       recipient_name: input.recipientName ?? null,
       notes: input.notes ?? null,
       status: 'pending',
+      dispatcher_notified: false,
     })
     .select()
     .single()
 
   if (error) throw new Error(`Failed to create booking: ${error.message}`)
   return rowToBooking(data)
+}
+
+/**
+ * Mark a booking's dispatcher notification as sent.
+ * Called after a successful WhatsApp send to the dispatcher.
+ */
+export async function markDispatcherNotified(id: string): Promise<void> {
+  const { error } = await supabase
+    .from(TABLE)
+    .update({ dispatcher_notified: true, updated_at: new Date().toISOString() })
+    .eq('id', id)
+
+  if (error) throw new Error(`Failed to mark dispatcher notified for booking ${id}: ${error.message}`)
+}
+
+/**
+ * Mark all pending unnotified bookings as notified.
+ * Called by QUEUE and ON DUTY commands as a recovery path for failed notifications.
+ */
+export async function markAllUnnotifiedAsNotified(): Promise<void> {
+  const { error } = await supabase
+    .from(TABLE)
+    .update({ dispatcher_notified: true, updated_at: new Date().toISOString() })
+    .eq('status', 'pending')
+    .eq('dispatcher_notified', false)
+
+  if (error) throw new Error(`Failed to mark unnotified bookings: ${error.message}`)
 }
 
 /**
@@ -197,5 +225,6 @@ function rowToBooking(row: Record<string, unknown>): BookingRecord {
     notes: row.notes != null ? (row.notes as string) : undefined,
     createdAt: row.created_at as string,
     updatedAt: row.updated_at as string,
+    dispatcherNotified: (row.dispatcher_notified as boolean) ?? false,
   }
 }
