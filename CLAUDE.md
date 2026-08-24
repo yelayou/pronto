@@ -266,6 +266,9 @@ This applies to everything: new features, refactors, dependency upgrades, config
 Sprint 1 is active. All core customer and dispatcher handlers are implemented. Remaining work:
 
 - `PRT-36` — Async webhook via QStash ✅ implemented, pending deploy + QStash setup in Upstash dashboard
-- `PRT-33` — Idempotency check on booking creation using Twilio MessageSid (prevent duplicate bookings on retries)
-- `PRT-34` — Conversation TTL (expire stale conversations after 2 hours of inactivity)
-- `PRT-61` — Conversational AI customer experience: NLU intent extraction, smart greetings (name + seasonal/holiday), location disambiguation (Pearson T1/T3, Union Station, Billy Bishop), natural language confirmation with fare estimate
+
+### Recently completed (verified in code, Done in Jira)
+
+- `PRT-33` — Idempotency check on booking creation using Twilio MessageSid — `deduplicateMessage()` in `src/lib/webhook/processor.ts`
+- `PRT-34` — Conversation TTL (expire stale conversations after 2 hours of inactivity) — `isConversationExpired()` in `src/lib/customer/handler.ts`
+- `PRT-61` — Conversational AI customer experience: NLU intent extraction, smart greetings, location disambiguation, natural language confirmation with fare estimate — see header comment in `src/lib/customer/handler.ts` (sub-tickets PRT-62–PRT-69)
