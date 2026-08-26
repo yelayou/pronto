@@ -1,5 +1,5 @@
 import Anthropic from '@anthropic-ai/sdk'
-import type { Tool, ToolUseBlock } from '@anthropic-ai/sdk/resources/beta/tools/messages'
+import type { Tool, ToolUseBlock } from '@anthropic-ai/sdk/resources'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 import { ConversationState, ServiceType, PackageSize, PaymentMethod } from '@/types'
@@ -253,8 +253,7 @@ export async function extractIntent(
   }
 
   try {
-    // Call Claude with tool_use to extract fields (tool use is in beta in SDK 0.21)
-    const response = await anthropic.beta.tools.messages.create({
+    const response = await anthropic.messages.create({
       model: 'claude-haiku-4-5-20251001',
       max_tokens: 1024,
       tools: [EXTRACTION_TOOL],
@@ -281,7 +280,6 @@ The "Current stage" field tells you what the bot is currently waiting for — us
       ]
     })
 
-    // Extract tool use block — response.content is ToolsBetaContentBlock[] (TextBlock | ToolUseBlock)
     let extractedFields: Record<string, unknown> = {}
     for (const block of response.content) {
       const toolBlock = block as ToolUseBlock
