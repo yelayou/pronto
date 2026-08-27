@@ -4,13 +4,24 @@ import type { DispatcherState } from '@/types'
 const TABLE = 'dispatcher_state'
 const ROW_ID = 1
 
+const TTL_MS = (Number(process.env.DISPATCHER_CACHE_TTL_SECONDS) || 30) * 1000
+
+// ─── In-memory cache ──────────────────────────────────────────────────────────
+
+let cache: { value: DispatcherState; cachedAt: number } | null = null
+
 // ─── Read ─────────────────────────────────────────────────────────────────────
 
 /**
- * Fetch the current dispatcher state.
- * Returns null if the row doesn't exist yet.
+ * Fetch the current dispatcher state, served from an in-memory cache with a
+ * 30-second TTL (configurable via DISPATCHER_CACHE_TTL_SECONDS).
+ * Cache is invalidated immediately on setOnDuty / setOffDuty.
  */
 export async function getDispatcherState(): Promise<DispatcherState | null> {
+  if (cache && Date.now() - cache.cachedAt < TTL_MS) {
+    return cache.value
+  }
+
   const { data, error } = await supabase
     .from(TABLE)
     .select('*')
@@ -22,7 +33,9 @@ export async function getDispatcherState(): Promise<DispatcherState | null> {
     throw new Error(`Failed to fetch dispatcher state: ${error.message}`)
   }
 
-  return rowToState(data)
+  const value = rowToState(data)
+  cache = { value, cachedAt: Date.now() }
+  return value
 }
 
 // ─── Write ────────────────────────────────────────────────────────────────────
@@ -44,7 +57,9 @@ export async function setOnDuty(zone: string): Promise<DispatcherState> {
     .single()
 
   if (error) throw new Error(`Failed to set ON DUTY: ${error.message}`)
-  return rowToState(data)
+  const value = rowToState(data)
+  cache = { value, cachedAt: Date.now() }
+  return value
 }
 
 /**
@@ -66,7 +81,9 @@ export async function setOffDuty(): Promise<DispatcherState> {
     .single()
 
   if (error) throw new Error(`Failed to set OFF DUTY: ${error.message}`)
-  return rowToState(data)
+  const value = rowToState(data)
+  cache = { value, cachedAt: Date.now() }
+  return value
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
