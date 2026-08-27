@@ -9,6 +9,12 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 
+// Always return a cache miss so these tests exercise the API path
+vi.mock('@/lib/supabase/geocodeCache', () => ({
+  getCachedGeocode: vi.fn().mockResolvedValue(null),
+  setCachedGeocode: vi.fn().mockResolvedValue(undefined),
+}))
+
 // Set required env var before importing the module
 process.env.GOOGLE_MAPS_API_KEY = 'test-key'
 

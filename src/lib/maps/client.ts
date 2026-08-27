@@ -11,6 +11,7 @@
 
 import type { LatLng, RouteResult } from '@/types'
 import { withRetry } from '@/lib/retry'
+import { getCachedGeocode, setCachedGeocode } from '@/lib/supabase/geocodeCache'
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY
 
@@ -35,6 +36,9 @@ export interface GeocodeResult {
 export async function geocodeAddress(
   address: string
 ): Promise<GeocodeResult | null> {
+  const cached = await getCachedGeocode(address)
+  if (cached) return cached
+
   const url = new URL('https://maps.googleapis.com/maps/api/geocode/json')
   url.searchParams.set('address', `${address}, Ontario, Canada`)
   url.searchParams.set('region', 'ca')
@@ -49,11 +53,14 @@ export async function geocodeAddress(
   }
 
   const result = json.results[0]
-  return {
+  const geocoded: GeocodeResult = {
     lat: result.geometry.location.lat,
     lng: result.geometry.location.lng,
     formattedAddress: result.formatted_address,
   }
+
+  await setCachedGeocode(address, geocoded)
+  return geocoded
 }
 
 // ─── Reverse geocode ──────────────────────────────────────────────────────────
