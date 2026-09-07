@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { verifyQStashSignature } from '@/lib/qstash/client'
 import { processWebhookPayload } from '@/lib/webhook/processor'
+import { logger } from '@/lib/logger'
 
 /**
  * POST /api/worker
@@ -26,7 +27,7 @@ export async function POST(request: NextRequest) {
 
   const isValid = await verifyQStashSignature(signature, rawBody)
   if (!isValid) {
-    console.warn('[worker] Invalid QStash signature — request rejected')
+    logger.warn('Invalid QStash signature — request rejected')
     return new NextResponse('Forbidden', { status: 403 })
   }
 
@@ -37,7 +38,7 @@ export async function POST(request: NextRequest) {
   } catch (err) {
     // Log but return 200 — we don't want QStash to retry malformed payloads
     // or errors that are unlikely to resolve on retry (e.g. bad Twilio sends).
-    console.error('[worker] Error processing job:', err)
+    logger.error('Error processing job', {}, err)
   }
 
   return new NextResponse('OK', { status: 200 })

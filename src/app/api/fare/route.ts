@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 import { calculateFare } from '@/lib/fare/calculator'
 import { FareInputSchema } from '@/lib/validation/schemas'
+import { logger } from '@/lib/logger'
 
 export async function POST(request: NextRequest) {
   let raw: unknown
@@ -13,7 +14,7 @@ export async function POST(request: NextRequest) {
 
   const parsed = FareInputSchema.safeParse(raw)
   if (!parsed.success) {
-    console.warn('[fare] Invalid request payload', parsed.error.issues)
+    logger.warn('Invalid request payload', { issues: parsed.error.issues.map(i => i.message) })
     return NextResponse.json(
       { error: 'Invalid input', issues: parsed.error.issues },
       { status: 400 }

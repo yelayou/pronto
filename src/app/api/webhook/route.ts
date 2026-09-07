@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from 'next/server'
 import { validateTwilioSignature } from '@/lib/twilio/client'
 import { isQStashEnabled, enqueueWebhookJob } from '@/lib/qstash/client'
 import { processWebhookPayload } from '@/lib/webhook/processor'
+import { logger } from '@/lib/logger'
 
 /**
  * POST /api/webhook
@@ -32,7 +33,7 @@ export async function POST(request: NextRequest) {
   formData.forEach((value, key) => { params[key] = value.toString() })
 
   if (!validateTwilioSignature(signature, url, params)) {
-    console.warn('[webhook] Invalid Twilio signature — request rejected', { url })
+    logger.warn('Invalid Twilio signature — request rejected', { url })
     return new NextResponse('Forbidden', { status: 403 })
   }
 
@@ -45,7 +46,7 @@ export async function POST(request: NextRequest) {
     } catch (err) {
       // Log but don't surface to Twilio — always return 200.
       // If enqueue fails, the message is lost; alerting can be added later.
-      console.error('[webhook] Failed to enqueue job:', err)
+      logger.error('Failed to enqueue job', {}, err)
     }
   } else {
     // Sync fallback for local dev (QSTASH_TOKEN not set).
@@ -54,7 +55,7 @@ export async function POST(request: NextRequest) {
     try {
       await processWebhookPayload(params)
     } catch (err) {
-      console.error('[webhook] Error processing message:', err)
+      logger.error('Error processing message', {}, err)
     }
   }
 

@@ -11,6 +11,7 @@
  */
 
 import { supabase } from './client'
+import { logger } from '@/lib/logger'
 
 const TABLE = 'processed_messages'
 const TTL_HOURS = 24
@@ -42,11 +43,11 @@ export async function deduplicateMessage(messageSid: string): Promise<boolean> {
 
   if (error.code === '23505') {
     // Unique violation — MessageSid already exists → duplicate
-    console.info(`[idempotency] Duplicate message ${messageSid} — skipping`)
+    logger.info('Duplicate message — skipping', { messageId: messageSid })
     return true
   }
 
   // Unexpected error — log and allow through to avoid silently dropping bookings
-  console.error(`[idempotency] Failed to insert MessageSid ${messageSid}:`, error.message)
+  logger.error('Failed to insert MessageSid', { messageId: messageSid }, error)
   return false
 }
