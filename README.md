@@ -4,7 +4,7 @@
 
 > Fast. Local. Pronto.
 
-There is no app and no customer-facing web UI. Customers book by texting a WhatsApp number; a Claude AI agent guides them through the flow and a single human dispatcher runs the fleet with short WhatsApp commands.
+There is no app and no customer-facing web UI. Customers book by texting a WhatsApp number; an AI-assisted conversation flow (Claude extracts booking details from each message) guides them through the flow and a single human dispatcher runs the fleet with short WhatsApp commands.
 
 ---
 
@@ -14,7 +14,7 @@ There is no app and no customer-facing web UI. Customers book by texting a Whats
 |-------------|---------------------------------------------|
 | Framework   | Next.js 14 (App Router)                     |
 | Messaging   | Twilio WhatsApp API                         |
-| AI agent    | Claude via Vercel AI SDK + `@anthropic-ai/sdk` |
+| AI-assisted parsing | Claude via Vercel AI SDK + `@anthropic-ai/sdk` |
 | Database    | Supabase (Postgres, service-role, server-side only) |
 | Maps        | Google Maps Platform (geocoding + distance matrix) |
 | Async jobs  | Upstash QStash (webhook fan-out)            |
@@ -85,7 +85,7 @@ SUPABASE_SERVICE_ROLE_KEY
 # Google Maps — geocoding, distance matrix, geofence
 GOOGLE_MAPS_API_KEY
 
-# Anthropic — Claude agent
+# Anthropic — Claude, used for AI-assisted intent extraction
 ANTHROPIC_API_KEY
 
 # Dispatcher — E.164 phone of the human operator

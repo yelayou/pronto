@@ -1,6 +1,6 @@
 # Pronto — CLAUDE.md
 
-On-demand rides and package delivery across the GTA, dispatched entirely via WhatsApp. There is no app, no web interface for customers — everything happens through a WhatsApp conversation powered by a Claude AI agent and a human dispatcher who receives and acts on bookings.
+On-demand rides and package delivery across the GTA, dispatched entirely via WhatsApp. There is no app, no web interface for customers — everything happens through a WhatsApp conversation with AI-assisted intent extraction (Claude parses each customer message into structured booking fields via a single tool call; the conversation flow itself is a deterministic state machine, not an autonomous agent) and a human dispatcher who receives and acts on bookings.
 
 ---
 
@@ -10,7 +10,7 @@ On-demand rides and package delivery across the GTA, dispatched entirely via Wha
 |---|---|
 | Framework | Next.js 14 (App Router) |
 | Messaging | Twilio WhatsApp API |
-| AI Agent | Claude via Vercel AI SDK + `@anthropic-ai/sdk` |
+| AI-assisted parsing | Claude via Vercel AI SDK + `@anthropic-ai/sdk` |
 | Database | Supabase (Postgres) — service role key, server-side only |
 | Maps | Google Maps Platform (geocoding + distance matrix) |
 | CI/CD | GitHub Actions + Vercel |
@@ -21,7 +21,7 @@ On-demand rides and package delivery across the GTA, dispatched entirely via Wha
 
 There are two actors who message the Twilio number:
 
-1. **Customers** — send a WhatsApp message to book a ride or package delivery. The Claude AI agent guides them through a multi-step conversation (service type → pickup → dropoff → passenger count / package details → payment method → confirmation). The conversation state is persisted per customer in Supabase.
+1. **Customers** — send a WhatsApp message to book a ride or package delivery. Each message is parsed by Claude via a single tool call (`extract_booking_fields`) to pull out structured fields; a deterministic state machine (not Claude) drives the multi-step conversation (service type → pickup → dropoff → passenger count / package details → payment method → confirmation). The conversation state is persisted per customer in Supabase.
 
 2. **The dispatcher** — a single human operator identified by `DISPATCHER_PHONE`. They receive booking notifications and respond with short commands (`CONFIRM [ID]`, `DECLINE [ID]`, `ARRIVED`, `COMPLETE`, etc.) to progress bookings.
 
