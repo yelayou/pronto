@@ -35,6 +35,7 @@ import { sendWhatsApp } from '@/lib/twilio/client'
 import { buildGreeting } from '@/lib/customer/greetings'
 import { extractIntent } from '@/lib/customer/intent'
 import { findLandmark, getLandmarkOption } from '@/lib/landmarks'
+import { logger, maskPhone } from '@/lib/logger'
 import type {
   ConversationState,
   ConversationStage,
@@ -79,7 +80,7 @@ export async function handleCustomerMessage(
   // If the conversation has been idle past its TTL, reset it so the customer
   // gets a fresh start rather than being dropped into a stale booking flow.
   if (convo && isConversationExpired(convo)) {
-    console.info(`[handler] Conversation expired for ${phone} — resetting`)
+    logger.info('Conversation expired — resetting', { phone: maskPhone(phone) })
     await resetConversation(phone)
     convo = null
   }
@@ -354,7 +355,7 @@ async function buildAndShowConfirmation(
         !dropoffCoords && convo.dropoffAddress ? geocodeAddress(convo.dropoffAddress) : Promise.resolve(null),
       ])
     } catch (err) {
-      console.error('[maps] Geocoding failed — treating as unresolved', err)
+      logger.error('Geocoding failed — treating as unresolved', {}, err)
     }
     if (pickupGeo) {
       pickupCoords = { lat: pickupGeo.lat, lng: pickupGeo.lng }
@@ -379,7 +380,7 @@ async function buildAndShowConfirmation(
   try {
     route = await getRoute(pickupCoords, dropoffCoords)
   } catch (err) {
-    console.error('[maps] getRoute failed — returning null route', err)
+    logger.error('getRoute failed — returning null route', {}, err)
   }
   if (!route) {
     return (
@@ -464,7 +465,7 @@ async function submitBooking(phone: string, convo: ConversationState): Promise<s
     await notifyDispatcher(booking.queueNumber)
     await markDispatcherNotified(booking.id)
   } catch (err) {
-    console.error('[booking] Failed to notify dispatcher — booking needs manual recovery', {
+    logger.error('Failed to notify dispatcher — booking needs manual recovery', {
       bookingId: booking.id,
       queueNumber: booking.queueNumber,
     }, err)

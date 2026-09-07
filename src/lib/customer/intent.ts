@@ -1,5 +1,6 @@
 import Anthropic from '@anthropic-ai/sdk'
 import type { Tool, ToolUseBlock } from '@anthropic-ai/sdk/resources'
+import { logger } from '@/lib/logger'
 
 const anthropic = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY })
 import { ConversationState, ServiceType, PackageSize, PaymentMethod } from '@/types'
@@ -335,7 +336,7 @@ The "Current stage" field tells you what the bot is currently waiting for — us
     }
   } catch (error) {
     // Graceful error fallback
-    console.error('Intent extraction error:', error)
+    logger.error('Intent extraction error', {}, error)
     return {
       nextPrompt: "Sorry, I didn't catch that — could you try again?"
     }

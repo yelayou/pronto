@@ -1,5 +1,6 @@
 import { supabase } from './client'
 import type { GeocodeResult } from '@/lib/maps/client'
+import { logger } from '@/lib/logger'
 
 const TTL_DAYS = 7
 const TABLE = 'geocode_cache'
@@ -40,6 +41,6 @@ export async function setCachedGeocode(address: string, result: GeocodeResult): 
   })
 
   if (error) {
-    console.warn('[geocode-cache] failed to write cache entry:', error.message)
+    logger.warn('Failed to write geocode cache entry', {}, error)
   }
 }

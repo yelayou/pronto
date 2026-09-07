@@ -14,8 +14,9 @@ import { handleCustomerMessage } from '@/lib/customer/handler'
 import { sendWhatsApp } from '@/lib/twilio/client'
 import { deduplicateMessage } from '@/lib/supabase/idempotency'
 import { checkRateLimit } from '@/lib/ratelimit'
-import { TwilioWebhookSchema, sanitizePhone } from '@/lib/validation/schemas'
+import { TwilioWebhookSchema } from '@/lib/validation/schemas'
 import { ConversationVersionError } from '@/lib/supabase/conversations'
+import { logger, maskPhone } from '@/lib/logger'
 
 /**
  * Process a single inbound WhatsApp message.
@@ -27,9 +28,9 @@ export async function processWebhookPayload(
 ): Promise<void> {
   const parsed = TwilioWebhookSchema.safeParse(params)
   if (!parsed.success) {
-    console.warn('[processor] Invalid webhook payload — skipping', {
+    logger.warn('Invalid webhook payload — skipping', {
       issues: parsed.error.issues.map(i => i.message),
-      from: sanitizePhone(params['From'] ?? ''),
+      phone: maskPhone(params['From'] ?? ''),
     })
     return
   }
@@ -49,7 +50,7 @@ export async function processWebhookPayload(
       if (shouldNotify) {
         await sendWhatsApp(from, 'Please slow down — send one message at a time 🙏')
       }
-      console.info(`[processor] Rate limit hit for ${from.slice(-4)}`)
+      logger.info('Rate limit hit', { phone: maskPhone(from) })
       return
     }
   }
@@ -73,16 +74,16 @@ export async function processWebhookPayload(
       }
     } catch (err) {
       if (err instanceof ConversationVersionError) {
-        console.warn('[processor] Concurrent write detected — dropping duplicate message', {
-          phone: sanitizePhone(from),
+        logger.warn('Concurrent write detected — dropping duplicate message', {
+          phone: maskPhone(from),
           error: err.message,
         })
         return
       }
       // Infrastructure failure (DB down, Maps unreachable, etc.) — notify customer
       // so they aren't left waiting in silence, then re-throw for logging upstream.
-      console.error('[processor] Unhandled error processing customer message', {
-        phone: sanitizePhone(from),
+      logger.error('Unhandled error processing customer message', {
+        phone: maskPhone(from),
       }, err)
       try {
         await sendWhatsApp(from, "We're experiencing a brief outage — please try again in a few minutes 🙏")

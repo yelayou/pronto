@@ -1,3 +1,5 @@
+import { logger } from '@/lib/logger'
+
 export type RetryOptions = {
   maxAttempts?: number
   isRetryable?: (err: unknown) => boolean
@@ -33,7 +35,7 @@ export async function withRetry<T>(
     } catch (err) {
       lastErr = err
       if (attempt === maxAttempts || !isRetryable(err)) {
-        console.error(`[retry] failed after ${attempt} attempt(s):`, err)
+        logger.error('Retry exhausted', { attempt }, err)
         throw err
       }
       const backoff = BASE_DELAY_MS * 2 ** (attempt - 1)

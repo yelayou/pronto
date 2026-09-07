@@ -12,6 +12,7 @@
 import type { LatLng, RouteResult } from '@/types'
 import { withRetry } from '@/lib/retry'
 import { getCachedGeocode, setCachedGeocode } from '@/lib/supabase/geocodeCache'
+import { logger } from '@/lib/logger'
 
 const API_KEY = process.env.GOOGLE_MAPS_API_KEY
 
@@ -48,7 +49,7 @@ export async function geocodeAddress(
   const json = await res.json() as GoogleGeocodeResponse
 
   if (json.status !== 'OK' || json.results.length === 0) {
-    console.warn('[maps] geocode failed:', json.status, address)
+    logger.warn('Geocode failed', { status: json.status })
     return null
   }
 
@@ -122,13 +123,13 @@ export async function getRoute(
   const json = await res.json() as GoogleDistanceMatrixResponse
 
   if (json.status !== 'OK') {
-    console.warn('[maps] distance matrix failed:', json.status)
+    logger.warn('Distance matrix failed', { status: json.status })
     return null
   }
 
   const element = json.rows[0]?.elements[0]
   if (!element || element.status !== 'OK') {
-    console.warn('[maps] distance matrix element failed:', element?.status)
+    logger.warn('Distance matrix element failed', { status: element?.status })
     return null
   }
 

@@ -10,6 +10,7 @@
  */
 
 import { Client, Receiver } from '@upstash/qstash'
+import { logger } from '@/lib/logger'
 
 // ─── Enqueue ──────────────────────────────────────────────────────────────────
 
@@ -66,7 +67,7 @@ export async function verifyQStashSignature(
   const nextSigningKey = process.env.QSTASH_NEXT_SIGNING_KEY
 
   if (!currentSigningKey || !nextSigningKey) {
-    console.warn('[qstash] QSTASH_CURRENT_SIGNING_KEY / QSTASH_NEXT_SIGNING_KEY not set — rejecting worker request')
+    logger.warn('QStash signing keys not set — rejecting worker request')
     return false
   }
 
@@ -75,7 +76,7 @@ export async function verifyQStashSignature(
   try {
     return await receiver.verify({ signature, body: rawBody })
   } catch (err) {
-    console.warn('[qstash] Signature verification failed:', err)
+    logger.warn('QStash signature verification failed', {}, err)
     return false
   }
 }
