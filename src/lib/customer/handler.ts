@@ -35,6 +35,7 @@ import { sendWhatsApp } from '@/lib/twilio/client'
 import { buildGreeting } from '@/lib/customer/greetings'
 import { extractIntent } from '@/lib/customer/intent'
 import { findLandmark, getLandmarkOption } from '@/lib/landmarks'
+import { assertValidTransition, InvalidTransitionError } from '@/lib/customer/stateMachine'
 import { logger, maskPhone } from '@/lib/logger'
 import type {
   ConversationState,
@@ -85,39 +86,50 @@ export async function handleCustomerMessage(
     convo = null
   }
 
-  // ── 4. Fresh / idle start ─────────────────────────────────────────────────
-  if (!convo || convo.stage === 'idle') {
-    if (!customer.name) {
-      await upsertConversationState({ customerPhone: phone, stage: 'awaiting_name' })
-      const greeting = buildGreeting(undefined, phone)
-      return `${greeting}\n\nBefore we get started, what's your name?`
+  try {
+    // ── 4. Fresh / idle start ───────────────────────────────────────────────
+    if (!convo || convo.stage === 'idle') {
+      if (!customer.name) {
+        assertValidTransition('idle', 'awaiting_name')
+        await upsertConversationState({ customerPhone: phone, stage: 'awaiting_name' })
+        const greeting = buildGreeting(undefined, phone)
+        return `${greeting}\n\nBefore we get started, what's your name?`
+      }
+      assertValidTransition('idle', 'awaiting_service')
+      await upsertConversationState({ customerPhone: phone, stage: 'awaiting_service' })
+      return `${buildGreeting(customer.name, phone)}\n\n${serviceMenuMessage()}`
     }
-    await upsertConversationState({ customerPhone: phone, stage: 'awaiting_service' })
-    return `${buildGreeting(customer.name, phone)}\n\n${serviceMenuMessage()}`
-  }
 
-  // ── 5. First-time name collection ──────────────────────────────────────────
-  if (convo.stage === 'awaiting_name') {
-    return handleNameCollection(phone, text, convo)
-  }
+    // ── 5. First-time name collection ────────────────────────────────────────
+    if (convo.stage === 'awaiting_name') {
+      return handleNameCollection(phone, text, convo)
+    }
 
-  // ── 6. Already confirmed — gentle nudge ───────────────────────────────────
-  if (convo.stage === 'confirmed') {
-    return `Your booking is confirmed and waiting for the driver. We'll message you as soon as it's accepted! 🙏`
-  }
+    // ── 6. Already confirmed — gentle nudge ──────────────────────────────────
+    if (convo.stage === 'confirmed') {
+      return `Your booking is confirmed and waiting for the driver. We'll message you as soon as it's accepted! 🙏`
+    }
 
-  // ── 7. Landmark disambiguation — waiting for sub-location choice ───────────
-  if (convo.stage === 'awaiting_landmark' && convo.pendingLandmark) {
-    return handleLandmarkResolution(phone, text, convo, isPin, lat, lng)
-  }
+    // ── 7. Landmark disambiguation — waiting for sub-location choice ─────────
+    if (convo.stage === 'awaiting_landmark' && convo.pendingLandmark) {
+      return handleLandmarkResolution(phone, text, convo, isPin, lat, lng)
+    }
 
-  // ── 8. Awaiting booking confirmation ──────────────────────────────────────
-  if (convo.stage === 'awaiting_confirm') {
-    return handleConfirmation(phone, text, convo, customer.name)
-  }
+    // ── 8. Awaiting booking confirmation ─────────────────────────────────────
+    if (convo.stage === 'awaiting_confirm') {
+      return handleConfirmation(phone, text, convo, customer.name)
+    }
 
-  // ── 9. All other stages — run NLU extraction ──────────────────────────────
-  return handleWithNLU(phone, text, convo, customer.name, isPin, lat, lng)
+    // ── 9. All other stages — run NLU extraction ─────────────────────────────
+    return handleWithNLU(phone, text, convo, customer.name, isPin, lat, lng)
+  } catch (err) {
+    if (err instanceof InvalidTransitionError) {
+      logger.error('Invalid stage transition — resetting conversation', { phone: maskPhone(phone) }, err)
+      await resetConversation(phone)
+      return `Something went wrong with your session. Let's start fresh — just message us again when you're ready! 🙏`
+    }
+    throw err
+  }
 }
 
 // ─── Stage handlers ───────────────────────────────────────────────────────────
@@ -132,6 +144,7 @@ async function handleNameCollection(
     return `Sorry, I didn't catch that! What's your name?`
   }
 
+  assertValidTransition(convo.stage, 'awaiting_service')
   await Promise.all([
     updateCustomerName(phone, name),
     upsertConversationState({ ...convo, stage: 'awaiting_service' }),
@@ -167,6 +180,7 @@ async function handleLandmarkResolution(
         : { ...convo, dropoffAddress: address, dropoffLat: lat, dropoffLng: lng }
 
     const nextStage = computeNextStage({ ...updated, pendingLandmark: undefined })
+    assertValidTransition(convo.stage, nextStage)
     await upsertConversationState({ ...updated, stage: nextStage, pendingLandmark: undefined })
     return nextPromptForStage(nextStage, updated)
   }
@@ -187,6 +201,7 @@ async function handleLandmarkResolution(
       : { ...convo, dropoffAddress: option.label, dropoffLat: option.lat, dropoffLng: option.lng }
 
   const nextStage = computeNextStage({ ...updated, pendingLandmark: undefined })
+  assertValidTransition(convo.stage, nextStage)
   await upsertConversationState({ ...updated, stage: nextStage, pendingLandmark: undefined })
 
   const pinLabel = pending.field === 'pickup'
@@ -239,6 +254,7 @@ async function handleWithNLU(
         field: intent.disambiguationField,
         landmarkId: intent.landmarkId,
       }
+      assertValidTransition(convo.stage, 'awaiting_landmark')
       await upsertConversationState({ ...merged, stage: 'awaiting_landmark', pendingLandmark })
       return landmark.prompt
     }
@@ -251,6 +267,7 @@ async function handleWithNLU(
     return buildAndShowConfirmation(phone, merged)
   }
 
+  assertValidTransition(convo.stage, nextStage)
   await upsertConversationState({ ...merged, stage: nextStage })
   return nextPromptForStage(nextStage, merged)
 }
@@ -285,6 +302,7 @@ async function handleLocationPin(
     return buildAndShowConfirmation(phone, merged)
   }
 
+  assertValidTransition(convo.stage, nextStage)
   await upsertConversationState({ ...merged, stage: nextStage })
 
   const pinLabel = needsPickup ? 'Pickup' : 'Drop-off'
@@ -401,6 +419,7 @@ async function buildAndShowConfirmation(
   })
 
   const updated: Omit<ConversationState, 'updatedAt'> = { ...convo, stage: 'awaiting_confirm', fareResult }
+  assertValidTransition(convo.stage, 'awaiting_confirm')
   await upsertConversationState(updated)
 
   return (
@@ -459,6 +478,7 @@ async function submitBooking(phone: string, convo: ConversationState): Promise<s
     notes: convo.notes,
   })
 
+  assertValidTransition(convo.stage, 'confirmed')
   await upsertConversationState({ ...convo, stage: 'confirmed' })
 
   try {
