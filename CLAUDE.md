@@ -143,7 +143,7 @@ All shared types live in a single file. Key ones:
 ## API endpoints
 
 ### `POST /api/webhook`
-Main Twilio webhook. Validates the `X-Twilio-Signature` header then either enqueues the job to QStash (when `QSTASH_TOKEN` is set) or processes synchronously (local dev fallback). Always responds with empty TwiML and HTTP 200 in <200ms so Twilio never times out or retries.
+Main Twilio webhook. Validates the `X-Twilio-Signature` header then either enqueues the job to QStash (when `QSTASH_TOKEN` is set) or processes synchronously (local dev fallback). If enqueueing fails it processes inline rather than dropping the message. Jobs are published with a per-sender flow-control key (parallelism 1) so a customer's messages are processed in order (PRT-76). Always responds with empty TwiML and HTTP 200 in <200ms so Twilio never times out or retries.
 
 ### `POST /api/worker`
 QStash job processor. Receives async jobs published by `/api/webhook`. Validates the `upstash-signature` header using `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`, then calls `processWebhookPayload()` which handles all dispatcher and customer routing. Shared processor lives in `src/lib/webhook/processor.ts`.
@@ -190,8 +190,9 @@ STAGING_URL                     # Used by E2E and smoke tests only
 QSTASH_TOKEN                    # Upstash QStash publish token
 QSTASH_CURRENT_SIGNING_KEY      # Used by /api/worker to verify QStash delivery signatures
 QSTASH_NEXT_SIGNING_KEY         # Rotated signing key (QStash rotates keys periodically)
-APP_BASE_URL                    # Optional: base URL for the worker callback (e.g. https://pronto.example.com)
-                                # Defaults to https://$VERCEL_URL if not set
+APP_BASE_URL                    # Base URL for the worker callback (e.g. https://pronto.example.com) — set it in staging/prod
+                                # Falls back to VERCEL_PROJECT_PRODUCTION_URL (production deploys), then VERCEL_URL,
+                                # which Vercel Deployment Protection usually blocks (PRT-76)
 ```
 
 Both Twilio and Supabase clients throw at module load time if their required vars are missing — this surfaces misconfiguration immediately on startup.
