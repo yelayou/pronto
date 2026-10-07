@@ -15,7 +15,7 @@ jobs:
           BRANCH="${{ github.head_ref }}"
           echo "Branch name: $BRANCH"
 
-          if [[ "$BRANCH" =~ ^(feature|fix|hotfix|ci|chore|release|docs|refactor|test)/.+ ]]; then
+          if [[ "$BRANCH" =~ ^((feature|fix|hotfix|ci|chore|release|docs|refactor|test)/.+|copilot/(feature|fix|hotfix|ci|chore|release|docs|refactor|test)[/-].+) ]]; then
             echo "✅ Branch name is valid: $BRANCH"
           else
             echo "❌ Invalid branch name: '$BRANCH'"
@@ -30,5 +30,6 @@ jobs:
             echo "  docs/<description>      e.g. docs/api-reference"
             echo "  refactor/<description>  e.g. refactor/fare-calculator"
             echo "  test/<description>      e.g. test/webhook-integration"
+            echo "  copilot/fix-<description> e.g. copilot/fix-svg-icon-rendering"
             exit 1
           fi
