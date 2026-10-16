@@ -14,12 +14,14 @@ import { logger } from '@/lib/logger'
  *   2. Serialise form payload
  *   3. Enqueue job to QStash → returns 200 in <200ms
  *   4. Processing happens asynchronously in POST /api/worker
+ *   If enqueue fails, falls back to inline processing (PRT-76)
  *
  * Sync fallback (QSTASH_TOKEN not set — local dev):
  *   1–2 same, then process inline before returning 200
  *
  * PRT-36: async webhook via QStash
  * PRT-59: use request.url directly (avoids fragile host-header reconstruction)
+ * PRT-76: inline fallback when enqueue fails
  */
 export async function POST(request: NextRequest) {
   // ── Validate Twilio signature ────────────────────────────────────────────────
@@ -44,9 +46,14 @@ export async function POST(request: NextRequest) {
     try {
       await enqueueWebhookJob(params)
     } catch (err) {
-      // Log but don't surface to Twilio — always return 200.
-      // If enqueue fails, the message is lost; alerting can be added later.
-      logger.error('Failed to enqueue job', {}, err)
+      // Enqueue failed (QStash outage, bad token) — process inline rather than
+      // dropping the message. Risks Twilio's timeout, but beats silence (PRT-76).
+      logger.error('Failed to enqueue job — processing inline', {}, err)
+      try {
+        await processWebhookPayload(params)
+      } catch (inlineErr) {
+        logger.error('Error processing message', {}, inlineErr)
+      }
     }
   } else {
     // Sync fallback for local dev (QSTASH_TOKEN not set).

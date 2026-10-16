@@ -107,7 +107,8 @@ DISPATCHER_CACHE_TTL_SECONDS    # In-memory dispatcher state cache TTL (default 
 QSTASH_TOKEN                    # Upstash publish token
 QSTASH_CURRENT_SIGNING_KEY      # /api/worker verifies delivery signatures
 QSTASH_NEXT_SIGNING_KEY         # Rotated signing key
-APP_BASE_URL                    # Optional: worker callback base URL (defaults to https://$VERCEL_URL)
+APP_BASE_URL                    # Worker callback base URL — set to the stable domain in staging/prod
+                                # (falls back to VERCEL_PROJECT_PRODUCTION_URL, then VERCEL_URL)
 
 # App
 NEXT_PUBLIC_APP_URL             # e.g. http://localhost:3000

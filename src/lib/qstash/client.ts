@@ -23,13 +23,44 @@ export function isQStashEnabled(): boolean {
 }
 
 /**
- * Publish a parsed Twilio webhook payload to QStash.
- * QStash will POST it to /api/worker on the same deployment.
+ * Resolve the base URL QStash should deliver worker jobs to.
  *
- * Worker URL priority:
- *   1. APP_BASE_URL env var  (explicit override — use for custom domains)
- *   2. VERCEL_URL env var    (set automatically on every Vercel deployment)
- *   3. http://localhost:3000 (fallback — only reached if QSTASH_TOKEN is set locally)
+ * Priority:
+ *   1. APP_BASE_URL                   (explicit override — use for custom domains)
+ *   2. VERCEL_PROJECT_PRODUCTION_URL  (stable domain, production-target deploys only)
+ *   3. VERCEL_URL                     (per-deployment URL — last resort; Vercel
+ *                                      Deployment Protection usually blocks it, PRT-76)
+ *   4. http://localhost:3000          (only reached if QSTASH_TOKEN is set locally)
+ */
+export function resolveWorkerBaseUrl(): string {
+  if (process.env.APP_BASE_URL) return process.env.APP_BASE_URL.replace(/\/+$/, '')
+
+  if (process.env.VERCEL_ENV === 'production' && process.env.VERCEL_PROJECT_PRODUCTION_URL) {
+    return `https://${process.env.VERCEL_PROJECT_PRODUCTION_URL}`
+  }
+
+  if (process.env.VERCEL_URL) {
+    logger.warn('APP_BASE_URL not set — QStash will call the per-deployment VERCEL_URL, which Deployment Protection may block')
+    return `https://${process.env.VERCEL_URL}`
+  }
+
+  return 'http://localhost:3000'
+}
+
+/**
+ * QStash flow-control key for a sender. Jobs sharing a key run one at a time,
+ * so a customer's messages are processed in order instead of racing on the
+ * conversation_state optimistic lock (PRT-46). Keys are restricted to
+ * alphanumerics, hyphen, underscore, and period.
+ */
+export function flowControlKeyFor(from: string): string {
+  return `sender-${from.replace(/[^A-Za-z0-9._-]/g, '')}`
+}
+
+/**
+ * Publish a parsed Twilio webhook payload to QStash.
+ * QStash will POST it to /api/worker (see resolveWorkerBaseUrl).
+ * Throws on failure — the caller is expected to fall back to inline processing.
  */
 export async function enqueueWebhookJob(
   params: Record<string, string>
@@ -37,16 +68,13 @@ export async function enqueueWebhookJob(
   const token = process.env.QSTASH_TOKEN
   if (!token) throw new Error('[qstash] QSTASH_TOKEN is not set')
 
-  const baseUrl =
-    process.env.APP_BASE_URL ??
-    (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : 'http://localhost:3000')
-
-  const workerUrl = `${baseUrl}/api/worker`
+  const workerUrl = `${resolveWorkerBaseUrl()}/api/worker`
 
   const client = new Client({ token })
   await client.publishJSON({
     url: workerUrl,
     body: params,
+    flowControl: { key: flowControlKeyFor(params['From'] ?? 'unknown'), parallelism: 1 },
   })
 }
 
