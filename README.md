@@ -273,7 +273,7 @@ Production deploys are manual by design and require an explicit confirmation ste
 
 Core customer and dispatcher flows are complete, along with production hardening: async webhook via QStash, idempotency, conversation TTL, rate limiting, Zod validation, optimistic locking, retries, structured logging, and an enforced state machine.
 
-- **In review:** `PRT-76` — QStash reliability fixes (stable worker URL, inline fallback on enqueue failure, per-customer ordering)
+- **Recently shipped:** `PRT-76` — QStash reliability fixes (stable worker URL, inline fallback on enqueue failure, per-customer ordering)
 - **Before go-live:** QStash project setup in Upstash, E2E + smoke coverage, verified WhatsApp Business number
 
 Full roadmap lives in the [Pronto App Notion hub](https://www.notion.so/342b747b9e0d80efa1baed37900e324e).
