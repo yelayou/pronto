@@ -8,11 +8,13 @@ On-demand rides and package delivery across the GTA, dispatched entirely via Wha
 
 | Layer | Tool |
 |---|---|
-| Framework | Next.js 14 (App Router) |
+| Framework | Next.js 15 (App Router) |
 | Messaging | Twilio WhatsApp API |
-| AI-assisted parsing | Claude via Vercel AI SDK + `@anthropic-ai/sdk` |
+| AI-assisted parsing | Claude via `@anthropic-ai/sdk` (`src/lib/customer/intent.ts`) |
 | Database | Supabase (Postgres) — service role key, server-side only |
 | Maps | Google Maps Platform (geocoding + distance matrix) |
+| Async jobs | Upstash QStash (webhook → worker) |
+| Rate limiting | Upstash Redis (in-memory fallback locally) |
 | CI/CD | GitHub Actions + Vercel |
 
 ---
@@ -21,7 +23,7 @@ On-demand rides and package delivery across the GTA, dispatched entirely via Wha
 
 There are two actors who message the Twilio number:
 
-1. **Customers** — send a WhatsApp message to book a ride or package delivery. Each message is parsed by Claude via a single tool call (`extract_booking_fields`) to pull out structured fields; a deterministic state machine (not Claude) drives the multi-step conversation (service type → pickup → dropoff → passenger count / package details → payment method → confirmation). The conversation state is persisted per customer in Supabase.
+1. **Customers** — send a WhatsApp message to book a ride or package delivery. Each message is parsed by Claude via a single tool call (`extract_booking_fields`) to pull out structured fields; a deterministic state machine (not Claude) drives the multi-step conversation (name for first-timers → service type → pickup → dropoff → landmark disambiguation if needed → passenger count / package details → payment method → confirmation). The conversation state is persisted per customer in Supabase.
 
 2. **The dispatcher** — a single human operator identified by `DISPATCHER_PHONE`. They receive booking notifications and respond with short commands (`CONFIRM [ID]`, `DECLINE [ID]`, `ARRIVED`, `COMPLETE`, etc.) to progress bookings.
 
@@ -36,24 +38,37 @@ src/
 ├── app/
 │   ├── api/
 │   │   ├── webhook/    ← Twilio inbound messages (main entry point)
+│   │   ├── worker/     ← QStash job processor
 │   │   ├── fare/       ← Fare calculation REST endpoint (POST)
 │   │   └── health/     ← Health check / smoke test target (GET)
 │   └── page.tsx
 ├── lib/
+│   ├── customer/       ← Customer handler, intent extraction (Claude), state machine, greetings
+│   ├── dispatcher/     ← Dispatcher command parser + handler
 │   ├── fare/           ← Pure fare calculator, no side effects
-│   ├── maps/           ← Google Maps geocoding + distance matrix
+│   ├── geofence/       ← GTA geofence validator (ray-casting)
+│   ├── landmarks/      ← GTA landmark lookup table (airports, stations)
+│   ├── maps/           ← Google Maps geocoding + distance matrix (+ geocode cache)
+│   ├── qstash/         ← QStash publish client + signature verification
+│   ├── ratelimit/      ← Per-phone rate limiting (Upstash Redis, in-memory fallback)
+│   ├── supabase/       ← Supabase service-role client + data access (server-side only)
 │   ├── twilio/         ← Twilio client + sendWhatsApp + signature validation
-│   └── supabase/       ← Supabase service-role client (server-side only)
+│   ├── validation/     ← Zod schemas (webhook payload, fare API)
+│   ├── webhook/        ← Shared processor for /api/webhook + /api/worker
+│   ├── config.ts       ← Required env var validation (throws at load)
+│   ├── logger.ts       ← Structured JSON logger + maskPhone()
+│   └── retry.ts        ← withRetry() exponential backoff
 └── types/
     └── index.ts        ← All shared TypeScript types (single source of truth)
 
 __tests__/
-├── unit/               ← Pure function tests (Vitest) — fare calculator etc.
-├── integration/        ← API route tests with mocked services (MSW)
-└── e2e/                ← Full WhatsApp flow tests (Playwright, needs STAGING_URL)
+└── unit/               ← Vitest unit tests (integration/ with MSW and e2e/ with Playwright are planned, not yet created)
 
 scripts/
 └── smoke.ts            ← Post-deploy smoke tests hitting /api/health
+
+supabase/
+└── migrations/         ← SQL migrations
 ```
 
 ---
@@ -110,9 +125,11 @@ total      = pre_hst × 1.13
 
 ```
 idle
+  → awaiting_name          (first-time customers only: collect name)
   → awaiting_service       (ride or package delivery?)
   → awaiting_pickup        (pickup address)
   → awaiting_dropoff       (drop-off address)
+  → awaiting_landmark      (ambiguous landmark, e.g. Pearson: which terminal?)
   → awaiting_pax           (rides only: how many passengers?)
   → awaiting_pkg_size      (packages only: small or large?)
   → awaiting_recipient     (packages only: recipient name)
@@ -121,7 +138,7 @@ idle
   → confirmed              (booking created, dispatcher notified)
 ```
 
-Conversation state is stored in Supabase per customer phone number.
+Conversation state is stored in Supabase per customer phone number. Allowed transitions are defined in an explicit transition map (PRT-44); illegal transitions are rejected.
 
 ---
 
@@ -182,7 +199,16 @@ SUPABASE_URL
 SUPABASE_SERVICE_ROLE_KEY
 GOOGLE_MAPS_API_KEY
 ANTHROPIC_API_KEY
+ETRANSFER_LINK                  # Interac autodeposit email/link — required, src/lib/config.ts throws if missing
 STAGING_URL                     # Used by E2E and smoke tests only
+
+# Upstash Redis — per-phone rate limiting (PRT-42). Unset → in-memory fallback (local dev)
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+
+# Optional tuning
+CONVERSATION_TTL_HOURS          # Idle conversation expiry (default 2)
+DISPATCHER_CACHE_TTL_SECONDS    # Dispatcher state in-memory cache TTL (default 30)
 
 # QStash async processing (PRT-36)
 # When set, the webhook enqueues jobs to QStash instead of processing inline.
@@ -219,8 +245,11 @@ Do not mock Supabase or Twilio in unit tests — use MSW in integration tests in
 
 | Trigger | Workflow | What runs |
 |---|---|---|
-| PR opened | `pr.yml` | lint + typecheck + unit tests + Vercel preview deploy |
+| PR to `main` | `pr.yml` | lint + typecheck + unit tests |
+| PR / push to `main` | `ci.yml` | lint + typecheck + unit tests + production build |
+| PR to `main` | `branch-name.yml` | enforces branch prefixes (`feature/`, `fix/`, `docs/`, `chore/`, …; `copilot/` variants allowed) |
 | Merge to `main` | `staging.yml` | full test suite + staging deploy + smoke tests |
+| Manual trigger | `preview.yml` | Vercel preview deploy |
 | Manual trigger | `production.yml` | type "DEPLOY" to confirm + prod deploy + smoke tests |
 
 Production deploys are manual and require an explicit confirmation step.
@@ -264,12 +293,20 @@ This applies to everything: new features, refactors, dependency upgrades, config
 
 ## In progress / TODO
 
-Sprint 1 is active. All core customer and dispatcher handlers are implemented. Remaining work:
+Core customer and dispatcher flows and the production-hardening backlog are implemented. Remaining work:
 
-- `PRT-36` — Async webhook via QStash ✅ implemented, pending deploy + QStash setup in Upstash dashboard
+- `PRT-76` — QStash reliability fixes (stable worker URL, inline fallback on enqueue failure, per-customer flow control) — in review
+- QStash project setup in the Upstash dashboard + `QSTASH_*` / `APP_BASE_URL` in Vercel (staging, then production)
+- Integration (MSW) and E2E (Playwright) test suites — directories not yet created
 
-### Recently completed (verified in code, Done in Jira)
+### Recently completed (verified in code)
 
-- `PRT-33` — Idempotency check on booking creation using Twilio MessageSid — `deduplicateMessage()` in `src/lib/webhook/processor.ts`
-- `PRT-34` — Conversation TTL (expire stale conversations after 2 hours of inactivity) — `isConversationExpired()` in `src/lib/customer/handler.ts`
-- `PRT-61` — Conversational AI customer experience: NLU intent extraction, smart greetings, location disambiguation, natural language confirmation with fare estimate — see header comment in `src/lib/customer/handler.ts` (sub-tickets PRT-62–PRT-69)
+- `PRT-44` — Conversation state machine with explicit transition map
+- `PRT-39` — Structured JSON logger with phone masking — `src/lib/logger.ts`
+- `PRT-37` — Dispatcher state in-memory cache — `src/lib/supabase/dispatcher.ts`
+- `PRT-38` — Geocode cache in Supabase, 7-day TTL
+- `PRT-50` — Composite indexes on bookings
+- `PRT-42` / `PRT-48` / `PRT-46` / `PRT-52` — rate limiting, Zod validation, optimistic locking, retry wrappers
+- `PRT-33` — MessageSid idempotency — `deduplicateMessage()` in `src/lib/supabase/idempotency.ts`, called from `src/lib/webhook/processor.ts`
+- `PRT-34` — Conversation TTL — `isConversationExpired()` in `src/lib/supabase/conversations.ts`
+- `PRT-61` — Conversational AI customer experience (sub-tickets PRT-62–PRT-69) — see header comment in `src/lib/customer/handler.ts`

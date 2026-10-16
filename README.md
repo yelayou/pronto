@@ -12,12 +12,13 @@ There is no app and no customer-facing web UI. Customers book by texting a Whats
 
 | Layer       | Tool                                        |
 |-------------|---------------------------------------------|
-| Framework   | Next.js 14 (App Router)                     |
+| Framework   | Next.js 15 (App Router)                     |
 | Messaging   | Twilio WhatsApp API                         |
-| AI-assisted parsing | Claude via Vercel AI SDK + `@anthropic-ai/sdk` |
+| AI-assisted parsing | Claude via `@anthropic-ai/sdk` (single tool call per message) |
 | Database    | Supabase (Postgres, service-role, server-side only) |
 | Maps        | Google Maps Platform (geocoding + distance matrix) |
-| Async jobs  | Upstash QStash (webhook fan-out)            |
+| Async jobs  | Upstash QStash (webhook → worker)           |
+| Rate limiting | Upstash Redis (in-memory fallback locally) |
 | CI/CD       | GitHub Actions + Vercel                     |
 
 ---
@@ -26,10 +27,10 @@ There is no app and no customer-facing web UI. Customers book by texting a Whats
 
 Two actors message the Twilio number:
 
-1. **Customers** — book a ride or package delivery through a multi-step WhatsApp conversation. State is persisted per phone number in Supabase.
+1. **Customers** — book a ride or package delivery through a multi-step WhatsApp conversation. Claude extracts booking fields from each message via one tool call (`extract_booking_fields`); a deterministic state machine with an explicit transition map drives the conversation. State is persisted per phone number in Supabase.
 2. **The dispatcher** — a single human operator identified by `DISPATCHER_PHONE`. They receive booking notifications and progress bookings with short commands.
 
-All inbound messages arrive at `POST /api/webhook`. The webhook validates the Twilio signature, then either enqueues the job to QStash (when `QSTASH_TOKEN` is set) or processes it synchronously (local dev fallback). Either path runs through the shared processor in `src/lib/webhook/processor.ts`.
+All inbound messages arrive at `POST /api/webhook`. The webhook validates the Twilio signature, then either enqueues the job to QStash (when `QSTASH_TOKEN` is set) or processes it synchronously (local dev fallback). Either path runs through the shared processor in `src/lib/webhook/processor.ts`, which applies per-phone rate limiting and `MessageSid` deduplication before routing.
 
 ---
 
@@ -94,6 +95,14 @@ DISPATCHER_PHONE
 # Payment — Interac autodeposit email or link
 ETRANSFER_LINK
 
+# Upstash Redis — per-phone rate limiting (optional locally; falls back to in-memory)
+UPSTASH_REDIS_REST_URL
+UPSTASH_REDIS_REST_TOKEN
+
+# Optional tuning
+CONVERSATION_TTL_HOURS          # Expire idle conversations after N hours (default 2)
+DISPATCHER_CACHE_TTL_SECONDS    # In-memory dispatcher state cache TTL (default 30)
+
 # QStash — async webhook processing (optional locally; required in staging/prod)
 QSTASH_TOKEN                    # Upstash publish token
 QSTASH_CURRENT_SIGNING_KEY      # /api/worker verifies delivery signatures
@@ -141,9 +150,11 @@ Both the Twilio and Supabase clients throw at module load time if required vars 
 
 ```
 idle
+  → awaiting_name          first-time customers: what's your name?
   → awaiting_service       ride or package?
   → awaiting_pickup        pickup address
   → awaiting_dropoff       drop-off address
+  → awaiting_landmark      ambiguous landmark (e.g. Pearson): which terminal/entrance?
   → awaiting_pax           rides: how many passengers?
   → awaiting_pkg_size      packages: small or large?
   → awaiting_recipient     packages: recipient name
@@ -152,7 +163,7 @@ idle
   → confirmed              booking created, dispatcher notified
 ```
 
-Conversation state is persisted in Supabase keyed on the customer's phone number.
+Conversation state is persisted in Supabase keyed on the customer's phone number. Transitions are enforced by an explicit transition map (PRT-44), writes use optimistic locking (PRT-46), and idle conversations expire after 2 hours (PRT-34).
 
 ---
 
@@ -193,15 +204,21 @@ src/
 │   │   └── worker/        ← QStash job processor
 │   └── page.tsx
 ├── lib/
-│   ├── customer/          ← Customer conversation handler
+│   ├── customer/          ← Customer conversation handler, intent extraction, state machine
 │   ├── dispatcher/        ← Dispatcher commands + handler
 │   ├── fare/              ← Pure fare calculator (no side effects)
 │   ├── geofence/          ← GTA geofence validator (ray-casting)
+│   ├── landmarks/         ← GTA landmark lookup (Pearson, Union, Billy Bishop…)
 │   ├── maps/              ← Google Maps (geocoding, distance matrix)
-│   ├── qstash/            ← QStash publish client
-│   ├── supabase/          ← Supabase service-role client (server-side only)
+│   ├── qstash/            ← QStash publish client + signature verification
+│   ├── ratelimit/         ← Per-phone rate limiting (Upstash Redis)
+│   ├── supabase/          ← Supabase service-role client + data access (server-side only)
 │   ├── twilio/            ← Twilio client + sendWhatsApp + signature validation
-│   └── webhook/           ← Shared processor used by /api/webhook + /api/worker
+│   ├── validation/        ← Zod schemas for webhook + fare API input
+│   ├── webhook/           ← Shared processor used by /api/webhook + /api/worker
+│   ├── config.ts          ← Required env var validation (throws at load)
+│   ├── logger.ts          ← Structured JSON logger with phone masking
+│   └── retry.ts           ← withRetry() exponential backoff wrapper
 └── types/
     └── index.ts           ← All shared TypeScript types (single source of truth)
 
@@ -241,8 +258,11 @@ Do not mock Supabase or Twilio in unit tests — use MSW in integration tests in
 
 | Trigger         | Workflow          | What runs                                                |
 |-----------------|-------------------|----------------------------------------------------------|
-| PR opened       | `pr.yml`          | lint + typecheck + unit tests + Vercel preview deploy    |
+| PR to `main`    | `pr.yml`          | lint + typecheck + unit tests                            |
+| PR / push to `main` | `ci.yml`      | lint + typecheck + unit tests + production build         |
+| PR to `main`    | `branch-name.yml` | enforces `feature/`, `fix/`, `docs/`, … branch prefixes  |
 | Merge to `main` | `staging.yml`     | full test suite + staging deploy + smoke tests           |
+| Manual trigger  | `preview.yml`     | Vercel preview deploy                                    |
 | Manual trigger  | `production.yml`  | type `DEPLOY` to confirm + prod deploy + smoke tests     |
 
 Production deploys are manual by design and require an explicit confirmation step.
@@ -251,9 +271,9 @@ Production deploys are manual by design and require an explicit confirmation ste
 
 ## Current status
 
-Sprint 1 (Apr 20 – May 4, 2026) is active. Core customer and dispatcher handlers are implemented.
+Core customer and dispatcher flows are complete, along with production hardening: async webhook via QStash, idempotency, conversation TTL, rate limiting, Zod validation, optimistic locking, retries, structured logging, and an enforced state machine.
 
-- **In PR:** `PRT-32` parallelise pickup/dropoff geocoding · `PRT-23` dispatcher notification with customer name + priority distance
-- **Up next:** `PRT-36` async webhook via QStash (code in, pending QStash setup in Upstash) · `PRT-33` conversation TTL (expire stale conversations after 2 h)
+- **In review:** `PRT-76` — QStash reliability fixes (stable worker URL, inline fallback on enqueue failure, per-customer ordering)
+- **Before go-live:** QStash project setup in Upstash, E2E + smoke coverage, verified WhatsApp Business number
 
 Full roadmap lives in the [Pronto App Notion hub](https://www.notion.so/342b747b9e0d80efa1baed37900e324e).
