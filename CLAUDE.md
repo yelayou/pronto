@@ -1,312 +1,64 @@
 # Pronto — CLAUDE.md
 
-On-demand rides and package delivery across the GTA, dispatched entirely via WhatsApp. There is no app, no web interface for customers — everything happens through a WhatsApp conversation with AI-assisted intent extraction (Claude parses each customer message into structured booking fields via a single tool call; the conversation flow itself is a deterministic state machine, not an autonomous agent) and a human dispatcher who receives and acts on bookings.
+WhatsApp-only ride and package delivery for the GTA. **See [README.md](README.md) for the stack, setup, env vars, API endpoints, fare formula, dispatcher commands, conversation stages, project structure, and CI/CD.** This file only covers what you need to know to change the code safely.
 
 ---
 
-## Stack
+## Mental model
 
-| Layer | Tool |
-|---|---|
-| Framework | Next.js 15 (App Router) |
-| Messaging | Twilio WhatsApp API |
-| AI-assisted parsing | Claude via `@anthropic-ai/sdk` (`src/lib/customer/intent.ts`) |
-| Database | Supabase (Postgres) — service role key, server-side only |
-| Maps | Google Maps Platform (geocoding + distance matrix) |
-| Async jobs | Upstash QStash (webhook → worker) |
-| Rate limiting | Upstash Redis (in-memory fallback locally) |
-| CI/CD | GitHub Actions + Vercel |
+- **Claude is a parser, not an agent.** `src/lib/customer/intent.ts` makes one `extract_booking_fields` tool call per customer message. A deterministic TypeScript state machine drives the conversation. Don't add agent loops or let Claude choose the next stage.
+- **One entry point, one processor.** `/api/webhook` (Twilio) and `/api/worker` (QStash) both call `processWebhookPayload()` in `src/lib/webhook/processor.ts`. That function rate-limits, dedups on `MessageSid`, then routes on `From === DISPATCHER_PHONE`. Put new cross-cutting behaviour there, not in either route.
+- **Stage changes go through the transition map.** `ALLOWED_TRANSITIONS` / `assertValidTransition()` in `src/lib/customer/stateMachine.ts`. Adding a stage means updating `ConversationStage` in `src/types/index.ts`, the map, and `__tests__/unit/state-machine.test.ts`.
+- **Conversation writes use optimistic locking** (`version` column). A `ConversationVersionError` means a concurrent message won; the processor drops it on purpose.
 
 ---
 
-## How the system works
+## Rules
 
-There are two actors who message the Twilio number:
-
-1. **Customers** — send a WhatsApp message to book a ride or package delivery. Each message is parsed by Claude via a single tool call (`extract_booking_fields`) to pull out structured fields; a deterministic state machine (not Claude) drives the multi-step conversation (name for first-timers → service type → pickup → dropoff → landmark disambiguation if needed → passenger count / package details → payment method → confirmation). The conversation state is persisted per customer in Supabase.
-
-2. **The dispatcher** — a single human operator identified by `DISPATCHER_PHONE`. They receive booking notifications and respond with short commands (`CONFIRM [ID]`, `DECLINE [ID]`, `ARRIVED`, `COMPLETE`, etc.) to progress bookings.
-
-All inbound messages arrive at `POST /api/webhook`. The webhook checks `From` against `DISPATCHER_PHONE` to route to either the dispatcher handler or the customer handler.
-
----
-
-## Project structure
-
-```
-src/
-├── app/
-│   ├── api/
-│   │   ├── webhook/    ← Twilio inbound messages (main entry point)
-│   │   ├── worker/     ← QStash job processor
-│   │   ├── fare/       ← Fare calculation REST endpoint (POST)
-│   │   └── health/     ← Health check / smoke test target (GET)
-│   └── page.tsx
-├── lib/
-│   ├── customer/       ← Customer handler, intent extraction (Claude), state machine, greetings
-│   ├── dispatcher/     ← Dispatcher command parser + handler
-│   ├── fare/           ← Pure fare calculator, no side effects
-│   ├── geofence/       ← GTA geofence validator (ray-casting)
-│   ├── landmarks/      ← GTA landmark lookup table (airports, stations)
-│   ├── maps/           ← Google Maps geocoding + distance matrix (+ geocode cache)
-│   ├── qstash/         ← QStash publish client + signature verification
-│   ├── ratelimit/      ← Per-phone rate limiting (Upstash Redis, in-memory fallback)
-│   ├── supabase/       ← Supabase service-role client + data access (server-side only)
-│   ├── twilio/         ← Twilio client + sendWhatsApp + signature validation
-│   ├── validation/     ← Zod schemas (webhook payload, fare API)
-│   ├── webhook/        ← Shared processor for /api/webhook + /api/worker
-│   ├── config.ts       ← Required env var validation (throws at load)
-│   ├── logger.ts       ← Structured JSON logger + maskPhone()
-│   └── retry.ts        ← withRetry() exponential backoff
-└── types/
-    └── index.ts        ← All shared TypeScript types (single source of truth)
-
-__tests__/
-└── unit/               ← Vitest unit tests (integration/ with MSW and e2e/ with Playwright are planned, not yet created)
-
-scripts/
-└── smoke.ts            ← Post-deploy smoke tests hitting /api/health
-
-supabase/
-└── migrations/         ← SQL migrations
-```
-
----
-
-## Fare engine (`src/lib/fare/calculator.ts`)
-
-The fare calculator is a pure function with no side effects. All monetary values are in CAD. HST (13%) is baked into the final total.
-
-**Formula:**
-```
-time_cost  = durationMin × $0.74
-dist_cost  = (km × $0.60) + max(0, (km − 35) × $0.30)   ← dead mileage tier at 35 km
-trip_base  = max(time_cost, dist_cost)                    ← whichever is higher wins
-subtotal   = trip_base + surcharges
-pre_hst    = max(min_fare, subtotal × multiplier)
-total      = pre_hst × 1.13
-```
-
-**Surcharges:**
-- Heavy traffic: +$3.00 flat
-- Small package: +$2.00
-- Large package: +$5.00
-- Fragile (packages only): +$3.00
-
-**Multipliers:**
-- Peak hours (7–9am, 4–7pm): ×1.5
-- Late night (after 10pm): ×1.3
-
-**Minimum fares:**
-- Ride: $7.00 (pre-HST)
-- Package: $8.00 (pre-HST)
-
-**Benchmark:** 25 km / 30 min, normal hours, no surcharges → **$25.09** (HST included). This is the canonical test case.
-
-**Customer-facing display:** A ±5% range is shown (`rangeL` / `rangeH`) so the customer sees e.g. *"$23.80 – $26.40 (HST included)"*.
-
----
-
-## Dispatcher commands (WhatsApp)
-
-| Command | Action |
-|---|---|
-| `ON DUTY Islington` | Activate bot, set current zone |
-| `OFF DUTY` | Deactivate bot |
-| `CONFIRM [ID]` | Accept booking, notify customer |
-| `DECLINE [ID]` | Decline booking, notify customer |
-| `ARRIVED` | Trigger payment instructions to customer |
-| `COMPLETE` | Mark trip paid, close booking |
-| `NOSHOW` | Log no-show, send $5 fee notice to customer |
-
----
-
-## Customer conversation flow (`ConversationStage`)
-
-```
-idle
-  → awaiting_name          (first-time customers only: collect name)
-  → awaiting_service       (ride or package delivery?)
-  → awaiting_pickup        (pickup address)
-  → awaiting_dropoff       (drop-off address)
-  → awaiting_landmark      (ambiguous landmark, e.g. Pearson: which terminal?)
-  → awaiting_pax           (rides only: how many passengers?)
-  → awaiting_pkg_size      (packages only: small or large?)
-  → awaiting_recipient     (packages only: recipient name)
-  → awaiting_payment       (cash or e-transfer?)
-  → awaiting_confirm       (show fare estimate, confirm booking)
-  → confirmed              (booking created, dispatcher notified)
-```
-
-Conversation state is stored in Supabase per customer phone number. Allowed transitions are defined in an explicit transition map (PRT-44); illegal transitions are rejected.
-
----
-
-## Key types (`src/types/index.ts`)
-
-All shared types live in a single file. Key ones:
-
-- `BookingRecord` — persisted booking with full fare breakdown, status, addresses, lat/lng
-- `CustomerRecord` — phone, name, booking count, incident count
-- `DispatcherState` — duty status, current zone, lat/lng
-- `ConversationState` — per-customer conversation stage and collected fields
-- `FareInput` / `FareResult` — fare calculator input/output
-- `TwilioWebhookPayload` — raw Twilio POST fields
-- `RouteResult` — distance matrix output (km, duration with/without traffic, heavy traffic flag)
-- `BookingStatus` — `pending | confirmed | en_route | arrived | complete | declined | noshow | cancelled`
-
----
-
-## API endpoints
-
-### `POST /api/webhook`
-Main Twilio webhook. Validates the `X-Twilio-Signature` header then either enqueues the job to QStash (when `QSTASH_TOKEN` is set) or processes synchronously (local dev fallback). If enqueueing fails it processes inline rather than dropping the message. Jobs are published with a per-sender flow-control key (parallelism 1) so a customer's messages are processed in order (PRT-76). Always responds with empty TwiML and HTTP 200 in <200ms so Twilio never times out or retries.
-
-### `POST /api/worker`
-QStash job processor. Receives async jobs published by `/api/webhook`. Validates the `upstash-signature` header using `QSTASH_CURRENT_SIGNING_KEY` / `QSTASH_NEXT_SIGNING_KEY`, then calls `processWebhookPayload()` which handles all dispatcher and customer routing. Shared processor lives in `src/lib/webhook/processor.ts`.
-
-### `POST /api/fare`
-Accepts a `FareInput` JSON body, returns a `FareResult`. Used internally and useful for manual testing. Required fields: `distanceKm`, `durationMin`, `serviceType`, `timeOfDay`, `heavyTraffic`.
-
-### `GET /api/health`
-Returns `{ status: "ok", service: "pronto", timestamp }`. Used by smoke tests after deploys.
-
----
-
-## Supabase (database)
-
-The client in `src/lib/supabase/client.ts` uses the **service role key** — it bypasses Row Level Security. This is intentional (server-side only, never exposed to the browser). Never import this client in any client component.
-
----
-
-## Twilio
-
-`src/lib/twilio/client.ts` exports:
-- `twilioClient` — the raw Twilio SDK client
-- `sendWhatsApp(to, body)` — sends a WhatsApp message; auto-prepends `whatsapp:` prefix
-- `validateTwilioSignature(signature, url, params)` — must be called in the webhook handler before processing any message
-
----
-
-## Environment variables
-
-```
-TWILIO_ACCOUNT_SID
-TWILIO_AUTH_TOKEN
-TWILIO_WHATSAPP_NUMBER          # Your Twilio WhatsApp sender number
-DISPATCHER_PHONE                # E.164 phone of the human dispatcher
-SUPABASE_URL
-SUPABASE_SERVICE_ROLE_KEY
-GOOGLE_MAPS_API_KEY
-ANTHROPIC_API_KEY
-ETRANSFER_LINK                  # Interac autodeposit email/link — required, src/lib/config.ts throws if missing
-STAGING_URL                     # Used by E2E and smoke tests only
-
-# Upstash Redis — per-phone rate limiting (PRT-42). Unset → in-memory fallback (local dev)
-UPSTASH_REDIS_REST_URL
-UPSTASH_REDIS_REST_TOKEN
-
-# Optional tuning
-CONVERSATION_TTL_HOURS          # Idle conversation expiry (default 2)
-DISPATCHER_CACHE_TTL_SECONDS    # Dispatcher state in-memory cache TTL (default 30)
-
-# QStash async processing (PRT-36)
-# When set, the webhook enqueues jobs to QStash instead of processing inline.
-# If QSTASH_TOKEN is not set, the webhook falls back to synchronous processing (safe for local dev).
-QSTASH_TOKEN                    # Upstash QStash publish token
-QSTASH_CURRENT_SIGNING_KEY      # Used by /api/worker to verify QStash delivery signatures
-QSTASH_NEXT_SIGNING_KEY         # Rotated signing key (QStash rotates keys periodically)
-APP_BASE_URL                    # Base URL for the worker callback (e.g. https://pronto.example.com) — set it in staging/prod
-                                # Falls back to VERCEL_PROJECT_PRODUCTION_URL (production deploys), then VERCEL_URL,
-                                # which Vercel Deployment Protection usually blocks (PRT-76)
-```
-
-Both Twilio and Supabase clients throw at module load time if their required vars are missing — this surfaces misconfiguration immediately on startup.
+- **Supabase client is service-role and server-only.** It bypasses RLS. Never import `src/lib/supabase/client.ts` from a client component.
+- **Validate the Twilio signature** (`validateTwilioSignature`) before processing anything in the webhook. The worker verifies `upstash-signature` instead.
+- **The webhook always returns empty TwiML + 200, fast.** Never let an error escape to Twilio, or it will retry.
+- **Logging:** use `logger` from `src/lib/logger.ts`, never `console.*`, and mask phone numbers with `maskPhone()`.
+- **External calls** (Maps, Twilio sends) go through `withRetry()` from `src/lib/retry.ts`.
+- **Types** live in `src/types/index.ts` (single source of truth). **Required env vars** throw at module load (`src/lib/config.ts`, Twilio and Supabase clients). Keep it that way so misconfiguration fails on startup.
+- **Fare calculator** (`src/lib/fare/calculator.ts`) stays a pure function. The benchmark **25 km / 30 min, normal hours, no surcharges → $25.09** must always pass.
 
 ---
 
 ## Testing
 
-```bash
-npm run test            # unit tests (Vitest) — fast, no network
-npm run test:watch      # watch mode
-npm run test:coverage   # coverage report
-npm run test:e2e        # Playwright E2E — needs STAGING_URL
-npm run smoke           # post-deploy smoke against /api/health
-```
-
-Unit tests live in `__tests__/unit/`. The fare calculator has comprehensive coverage — use `calculateFare` test cases as the canonical reference for fare logic. The benchmark test (25 km / 30 min → $25.09) must always pass.
-
-Do not mock Supabase or Twilio in unit tests — use MSW in integration tests instead.
+- Unit tests: `__tests__/unit/` (Vitest). Run `npm run test`, `npm run typecheck`, and `npm run lint` before opening a PR.
+- **Do not mock Supabase or Twilio in unit tests.** Use MSW in integration tests instead. Mocking our own modules (e.g. the processor) or third-party SDKs like `@upstash/qstash` is fine.
+- `__tests__/integration/` (MSW) and `__tests__/e2e/` (Playwright, needs `STAGING_URL`) are planned but not yet created.
 
 ---
 
-## CI/CD
+## Workflow — Jira tickets required
 
-| Trigger | Workflow | What runs |
-|---|---|---|
-| PR to `main` | `pr.yml` | lint + typecheck + unit tests |
-| PR / push to `main` | `ci.yml` | lint + typecheck + unit tests + production build |
-| PR to `main` | `branch-name.yml` | enforces branch prefixes (`feature/`, `fix/`, `docs/`, `chore/`, …; `copilot/` variants allowed) |
-| Merge to `main` | `staging.yml` | full test suite + staging deploy + smoke tests |
-| Manual trigger | `preview.yml` | Vercel preview deploy |
-| Manual trigger | `production.yml` | type "DEPLOY" to confirm + prod deploy + smoke tests |
-
-Production deploys are manual and require an explicit confirmation step.
-
----
-
-## Development
-
-```bash
-npm run dev          # local dev server at localhost:3000
-npx ngrok http 3000  # expose webhook to Twilio sandbox
-# Set Twilio sandbox webhook URL to: https://YOUR_NGROK_URL/api/webhook
-```
-
----
-
-## Development workflow — Jira tickets required
-
-**Before writing any code or making any meaningful change, a Jira ticket must exist.**
-
-Use the PRT project at `yelayou.atlassian.net`. Choose the right type:
+**Before writing any code or making any meaningful change, a Jira ticket must exist** in the PRT project at `yelayou.atlassian.net`.
 
 | Scope | Ticket type |
 |---|---|
-| Single focused change (new function, small fix, isolated feature) | **Story** |
-| Defect / regression in existing behaviour | **Bug** |
+| Single focused change | **Story** |
+| Defect / regression | **Bug** |
 | Cross-cutting feature spanning multiple stories | **Epic** |
-| Small piece of work under an existing story | **Subtask** |
+| Small piece of an existing story | **Subtask** |
 
-If you're unsure whether something is a Story or an Epic, default to Story — it can always be promoted later.
+Default to Story if unsure.
 
-**Workflow:**
 1. Create the ticket (or confirm an existing one covers the work)
-2. Reference the ticket key (e.g. `PRT-42`) in commit messages and PR descriptions
-3. Update ticket status as work progresses (In Progress → In Review → Done)
-4. Close the ticket once the change is deployed and smoke tests pass
+2. Branch with a valid prefix (`feature/`, `fix/`, `docs/`, `chore/`, …; enforced by `branch-name.yml`) and reference the key (e.g. `PRT-42`) in commits and PR descriptions
+3. Move the ticket In Progress → In Review → Done
+4. Close it once the change is deployed and staging smoke tests pass
 
-This applies to everything: new features, refactors, dependency upgrades, config changes, and bug fixes. The only exception is one-line typo fixes in comments or docs.
+This applies to everything (features, refactors, dependency upgrades, config, bug fixes) except one-line typo fixes in comments or docs. Production deploys are manual (`production.yml`, type `DEPLOY`).
+
+Keep README.md the single place for reference docs. Only add to this file what an AI assistant needs and the README doesn't cover.
 
 ---
 
 ## In progress / TODO
 
-Core customer and dispatcher flows and the production-hardening backlog are implemented. Remaining work:
-
-- `PRT-76` — QStash reliability fixes (stable worker URL, inline fallback on enqueue failure, per-customer flow control) — in review
-- QStash project setup in the Upstash dashboard + `QSTASH_*` / `APP_BASE_URL` in Vercel (staging, then production)
-- Integration (MSW) and E2E (Playwright) test suites — directories not yet created
-
-### Recently completed (verified in code)
-
-- `PRT-44` — Conversation state machine with explicit transition map
-- `PRT-39` — Structured JSON logger with phone masking — `src/lib/logger.ts`
-- `PRT-37` — Dispatcher state in-memory cache — `src/lib/supabase/dispatcher.ts`
-- `PRT-38` — Geocode cache in Supabase, 7-day TTL
-- `PRT-50` — Composite indexes on bookings
-- `PRT-42` / `PRT-48` / `PRT-46` / `PRT-52` — rate limiting, Zod validation, optimistic locking, retry wrappers
-- `PRT-33` — MessageSid idempotency — `deduplicateMessage()` in `src/lib/supabase/idempotency.ts`, called from `src/lib/webhook/processor.ts`
-- `PRT-34` — Conversation TTL — `isConversationExpired()` in `src/lib/supabase/conversations.ts`
-- `PRT-61` — Conversational AI customer experience (sub-tickets PRT-62–PRT-69) — see header comment in `src/lib/customer/handler.ts`
+- QStash project setup in the Upstash dashboard, plus `QSTASH_*` and `APP_BASE_URL` in Vercel (staging, then production). Code is ready (PRT-36, PRT-76).
+- Integration (MSW) and E2E (Playwright) test suites.
+- Open from earlier reviews: least-privilege DB roles (PRT-57), circuit breakers (PRT-53), customer handler split (PRT-43), API versioning (PRT-47), feature flags (PRT-54), secrets rotation (PRT-56), multi-dispatcher (PRT-40).
