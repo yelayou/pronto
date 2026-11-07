@@ -35,18 +35,18 @@ WhatsApp-only ride and package delivery for the GTA. **See [README.md](README.md
 
 ## Workflow — Linear issues required
 
-**Before writing any code or making any meaningful change, a Linear issue must exist** in the **SOL** team of the YG Lab workspace (`linear.app/yg-labs`). Pronto issues belong to one of the `Pronto — …` projects (setup & CI/CD, dispatcher, customer conversation flow, fare engine, booking & notifications, payment flow, maps & zone resolution, testing).
+**Before writing any code or making any meaningful change, a Linear issue must exist** in the **Pronto** team (key `PRO`) of the YG Lab workspace (`linear.app/yg-labs`). Put each issue in one of the team's projects: Project setup & CI/CD, Dispatcher controls & commands, Customer conversation flow, Fare engine, Booking & notifications, Payment flow, Maps & zone resolution, or Testing.
 
 Label each issue `Feature`, `Improvement`, or `Bug` (defects and regressions). Use sub-issues for small pieces of an existing issue. Check for a matching issue before creating one.
 
 1. Create the issue (or confirm an existing one covers the work) and move it to **In Progress**
-2. Branch with a valid prefix and the issue key, e.g. `fix/sol-68-qstash-reliability`. Linear's suggested branch name (`yelayou/sol-…`) fails `branch-name.yml`, so don't use it as is. Reference the key (e.g. `SOL-68`) in commits and the PR title so Linear links the PR
+2. Branch with a valid prefix and the issue key, e.g. `fix/pro-68-qstash-reliability`. Linear's suggested branch name (`yelayou/pro-…`) fails `branch-name.yml`, so don't use it as is. Reference the key (e.g. `PRO-68`) in commits and the PR title so Linear links the PR
 3. Move it to **In Review** when the PR is open
 4. Move it to **Done** once the change is deployed and staging smoke tests pass
 
 This applies to everything (features, refactors, dependency upgrades, config, bug fixes) except one-line typo fixes in comments or docs. Production deploys are manual (`production.yml`, type `DEPLOY`).
 
-**Old Jira keys:** commits before November 2026 reference Jira keys (`PRT-…`). Migrated issues map as **PRT-N → SOL-(N−8)**, e.g. PRT-76 → SOL-68. The Jira epics PRT-5–12 became the `Pronto — …` projects. The `PRT-…` keys in code comments are historical; leave them.
+**Old Jira keys:** commits before November 2026 reference Jira keys (`PRT-…`). Migrated issues map as **PRT-N → PRO-(N−8)**, e.g. PRT-76 → PRO-68. The Jira epics PRT-5–12 became the eight projects above. Linear keys briefly used the `SOL-` prefix in November 2026; `SOL-N` and `PRO-N` are the same issue. The `PRT-…` keys in code comments are historical; leave them.
 
 Keep README.md the single place for reference docs. Only add to this file what an AI assistant needs and the README doesn't cover.
 
@@ -54,6 +54,6 @@ Keep README.md the single place for reference docs. Only add to this file what a
 
 ## In progress / TODO
 
-- QStash project setup in the Upstash dashboard, plus `QSTASH_*` and `APP_BASE_URL` in Vercel (staging, then production). Code is ready (SOL-28, SOL-68).
-- Integration (MSW) and E2E (Playwright) test suites (SOL-22, SOL-23).
-- Open from earlier reviews: least-privilege DB roles (SOL-49), circuit breakers (SOL-45), domain services split (SOL-35), API versioning (SOL-39), feature flags (SOL-46), secrets rotation (SOL-48), multi-dispatcher (SOL-32).
+- QStash project setup in the Upstash dashboard, plus `QSTASH_*` and `APP_BASE_URL` in Vercel (staging, then production). Code is ready (PRO-28, PRO-68).
+- Integration (MSW) and E2E (Playwright) test suites (PRO-22, PRO-23).
+- Open from earlier reviews: least-privilege DB roles (PRO-49), circuit breakers (PRO-45), domain services split (PRO-35), API versioning (PRO-39), feature flags (PRO-46), secrets rotation (PRO-48), multi-dispatcher (PRO-32).
