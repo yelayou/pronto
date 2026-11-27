@@ -57,3 +57,19 @@ Keep README.md the single place for reference docs. Only add to this file what a
 - QStash project setup in the Upstash dashboard, plus `QSTASH_*` and `APP_BASE_URL` in Vercel (staging, then production). Code is ready (PRO-28, PRO-68).
 - Integration (MSW) and E2E (Playwright) test suites (PRO-22, PRO-23).
 - Open from earlier reviews: least-privilege DB roles (PRO-49), circuit breakers (PRO-45), domain services split (PRO-35), API versioning (PRO-39), feature flags (PRO-46), secrets rotation (PRO-48), multi-dispatcher (PRO-32).
+
+---
+
+## Agent skills
+
+### Issue tracker
+
+Issues live in Linear (team `PRO`, YG Lab workspace) and are managed through the Linear MCP tools. See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+The five default triage labels are used as-is (`needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`). See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: one `CONTEXT.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
