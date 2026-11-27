@@ -12,17 +12,6 @@ jobs:
     name: Full tests + deploy staging
     runs-on: ubuntu-latest
     environment: staging
-    env:
-      TWILIO_ACCOUNT_SID: ${{ secrets.STAGING_TWILIO_ACCOUNT_SID }}
-      TWILIO_AUTH_TOKEN: ${{ secrets.STAGING_TWILIO_AUTH_TOKEN }}
-      TWILIO_WHATSAPP_NUMBER: ${{ secrets.STAGING_TWILIO_WHATSAPP_NUMBER }}
-      SUPABASE_URL: ${{ secrets.STAGING_SUPABASE_URL }}
-      SUPABASE_ANON_KEY: ${{ secrets.STAGING_SUPABASE_ANON_KEY }}
-      SUPABASE_SERVICE_ROLE_KEY: ${{ secrets.STAGING_SUPABASE_SERVICE_ROLE_KEY }}
-      GOOGLE_MAPS_API_KEY: ${{ secrets.GOOGLE_MAPS_API_KEY }}
-      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
-      DISPATCHER_PHONE: ${{ secrets.DISPATCHER_PHONE }}
-      ETRANSFER_LINK: ${{ secrets.ETRANSFER_LINK }}
 
     steps:
       - uses: actions/checkout@v4
